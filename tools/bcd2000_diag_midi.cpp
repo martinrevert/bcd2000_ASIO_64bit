@@ -511,12 +511,14 @@ void EmitDecodedMidiMessage(uint8_t status, uint8_t d1, uint8_t d2,
 
 void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsbMidi, UCHAR inPipeId,
                             UCHAR outPipeId) {
-  ULONG inTimeoutMs = 50;
+  ULONG inTimeoutMs = 250;
   WinUsb_SetPipePolicy(hWinUsbMidi, inPipeId, PIPE_TRANSFER_TIMEOUT,
                        sizeof(inTimeoutMs), &inTimeoutMs);
   UCHAR autoClearStall = 1;
   WinUsb_SetPipePolicy(hWinUsbMidi, inPipeId, AUTO_CLEAR_STALL,
                        sizeof(autoClearStall), &autoClearStall);
+  UCHAR rawIo = 1;
+  WinUsb_SetPipePolicy(hWinUsbMidi, inPipeId, RAW_IO, sizeof(rawIo), &rawIo);
 
   uint8_t buffer[64];
 
@@ -934,29 +936,37 @@ int main() {
                            ctx.midiInPipe, ctx.midiOutPipe);
 
   while (g_Running.load()) {
-    // 1. Process queued decoded control events
+    // 1. Process queued decoded control events (swap out of mutex in <1us so
+    //    console std::cout never blocks MidiReaderThreadWorker!)
+    std::queue<DecodedControlEvent> localEvents;
     {
       std::lock_guard<std::mutex> lock(g_EventMutex);
-      while (!g_EventQueue.empty()) {
-        auto ev = g_EventQueue.front();
-        g_EventQueue.pop();
+      std::swap(localEvents, g_EventQueue);
+    }
 
-        std::cout << std::setfill(' ') << std::left
-                  << std::setw(10) << ("[" + ev.controlType + "]")
-                  << std::setw(36) << ev.controlName << " "
-                  << std::setw(36) << ev.detailValue;
+    if (!localEvents.empty()) {
+      std::ostringstream batchOut;
+      while (!localEvents.empty()) {
+        auto ev = localEvents.front();
+        localEvents.pop();
+
+        batchOut << std::setfill(' ') << std::left
+                 << std::setw(10) << ("[" + ev.controlType + "]")
+                 << std::setw(36) << ev.controlName << " "
+                 << std::setw(36) << ev.detailValue;
 
         if (ev.controlType == "BUTTON") {
           if (ev.ledToggled) {
-            std::cout << " ==> [LED CC 0x" << HexByte(ev.ledCc) << " "
-                      << (ev.newLedState ? "ENCENDIDO" : "APAGADO") << "]";
+            batchOut << " ==> [LED CC 0x" << HexByte(ev.ledCc) << " "
+                     << (ev.newLedState ? "ENCENDIDO" : "APAGADO") << "]";
           } else if (!ev.hasPhysicalLed) {
-            std::cout << " [Sin LED fisico]";
+            batchOut << " [Sin LED fisico]";
           }
         }
 
-        std::cout << "  (" << ev.rawHex << ")\n";
+        batchOut << "  (" << ev.rawHex << ")\n";
       }
+      std::cout << batchOut.str() << std::flush;
     }
 
     // 2. Process non-blocking keyboard commands
