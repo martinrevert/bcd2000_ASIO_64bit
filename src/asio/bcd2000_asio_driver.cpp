@@ -453,7 +453,7 @@ ASIOError Bcd2000AsioDriver::getChannelInfo(ASIOChannelInfo *info) {
         return ASE_InvalidParameter;
     }
 
-    info->type = ASIOSTInt16LSB;
+    info->type = ASIOSTInt32LSB;
     info->channelGroup = 0;
 
     if (info->isInput) {
@@ -583,10 +583,13 @@ ASIOError Bcd2000AsioDriver::start() {
 
     m_toggleIndex = 0;
     m_samplePosition.store(0, std::memory_order_release);
-    m_systemTimeNs.store(QuerySystemTimeNanoseconds(),
-                         std::memory_order_release);
+    const uint64_t initialNowNs = QuerySystemTimeNanoseconds();
+    m_systemTimeNs.store(initialNowNs, std::memory_order_release);
+    m_smoothedSystemTimeNs = static_cast<double>(initialNowNs);
     m_ringWriteFrames = 0;
     m_ringReadFrames = 0;
+    m_ditherState = 0x12345678u;
+    m_packetPhase = 0;
     std::fill(m_outRingBuffer.begin(), m_outRingBuffer.end(), static_cast<int16_t>(0));
 
     m_streamingActive.store(true, std::memory_order_release);
@@ -621,7 +624,7 @@ ASIOError Bcd2000AsioDriver::controlPanel() {
         "Behringer BCD2000 ASIO 64-bit Driver (v2.3)\n"
         "--------------------------------------------------\n"
         "Hardware Status : %s\n"
-        "Sample Rate     : %.0f Hz (16-bit Signed LE)\n"
+        "Sample Rate     : %.0f Hz (32-bit ASIO -> 16-bit TPDF Dithered LE)\n"
         "ASIO Buffer Size: %ld samples (%.2f ms)\n"
         "Output Channels : 4 (Ch 1-2 Master RCA, Ch 3-4 Headphones)\n"
         "Input Channels  : 4 (Ch 1-2 Deck A/Mic, Ch 3-4 Deck B)\n"
@@ -662,16 +665,29 @@ uint64_t Bcd2000AsioDriver::QuerySystemTimeNanoseconds() const {
 
 void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
     const long bufIdx = m_toggleIndex;
-    const uint64_t nowNs = QuerySystemTimeNanoseconds();
+    const uint64_t rawNowNs = QuerySystemTimeNanoseconds();
     const uint64_t curPos = m_samplePosition.load(std::memory_order_relaxed);
 
+    // Filter USB URB completion timing jitter from ASIOTimeInfo.systemTime so
+    // DAW/DJ transport DLLs see a smooth, strictly monotonic audio clock.
+    const double nominalStepNs =
+        (static_cast<double>(m_bufferSize) * 1.0e9) / m_sampleRate;
+    if (curPos == 0 || m_smoothedSystemTimeNs <= 0.0) {
+        m_smoothedSystemTimeNs = static_cast<double>(rawNowNs);
+    } else {
+        m_smoothedSystemTimeNs += nominalStepNs;
+        const double driftNs =
+            static_cast<double>(rawNowNs) - m_smoothedSystemTimeNs;
+        m_smoothedSystemTimeNs += driftNs * 0.02;
+    }
+    const uint64_t nowNs = static_cast<uint64_t>(m_smoothedSystemTimeNs);
     m_systemTimeNs.store(nowNs, std::memory_order_release);
 
     // Zero input buffers for this half-buffer before handing to host
     for (long c = 0; c < kNumInputs; ++c) {
         if (m_inputActive[c]) {
             std::memset(m_inputStorage[c][bufIdx].data(), 0,
-                        static_cast<size_t>(m_bufferSize) * sizeof(int16_t));
+                        static_cast<size_t>(m_bufferSize) * sizeof(int32_t));
         }
     }
 
@@ -689,24 +705,47 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
         m_callbacks.bufferSwitch(bufIdx, ASIOTrue);
     }
 
-    // Interleave the 4 non-interleaved ASIO output channels into m_outRingBuffer
-    const int16_t *ch0 = m_outputActive[0] ? m_outputStorage[0][bufIdx].data() : nullptr;
-    const int16_t *ch1 = m_outputActive[1] ? m_outputStorage[1][bufIdx].data() : nullptr;
-    const int16_t *ch2 = m_outputActive[2] ? m_outputStorage[2][bufIdx].data() : nullptr;
-    const int16_t *ch3 = m_outputActive[3] ? m_outputStorage[3][bufIdx].data() : nullptr;
+    // Interleave the 4 non-interleaved 32-bit ASIO output channels (ASIOSTInt32LSB)
+    // into m_outRingBuffer (16-bit S16_LE) with -0.25 dB inter-sample headroom,
+    // 1-LSB TPDF (Triangular Probability Density Function) dither, and hard clamping.
+    const int32_t *ch0 = m_outputActive[0] ? m_outputStorage[0][bufIdx].data() : nullptr;
+    const int32_t *ch1 = m_outputActive[1] ? m_outputStorage[1][bufIdx].data() : nullptr;
+    const int32_t *ch2 = m_outputActive[2] ? m_outputStorage[2][bufIdx].data() : nullptr;
+    const int32_t *ch3 = m_outputActive[3] ? m_outputStorage[3][bufIdx].data() : nullptr;
 
     const size_t mask = kRingCapacityFrames - 1;
     uint64_t writeIdx = m_ringWriteFrames;
+    uint32_t rng = m_ditherState;
+
+    auto ConvertInt32ToDitheredInt16 = [&rng](int32_t s32) -> int16_t {
+        if (s32 == 0) {
+            return 0;
+        }
+        // Xorshift32 PRNG for symmetric 1-LSB TPDF dither
+        rng ^= rng << 13;
+        rng ^= rng >> 17;
+        rng ^= rng << 5;
+        const int32_t r1 = static_cast<int32_t>(rng & 0xFFFFu);
+        const int32_t r2 = static_cast<int32_t>((rng >> 16) & 0xFFFFu);
+        const int32_t tpdf = r1 - r2; // Range [-65535, +65535] (+/- 1 LSB at 16-bit)
+
+        // Apply -0.25 dB (31838 / 32768) inter-sample peak headroom for the CS4220 DAC
+        const int64_t scaled = (static_cast<int64_t>(s32) * 31838LL) >> 15;
+        const int32_t quantized =
+            static_cast<int32_t>((scaled + static_cast<int64_t>(tpdf) + 32768LL) >> 16);
+        return static_cast<int16_t>(std::clamp(quantized, -32767, 32767));
+    };
 
     for (long s = 0; s < m_bufferSize; ++s) {
-        size_t slot = static_cast<size_t>(writeIdx & mask) * 4;
-        m_outRingBuffer[slot + 0] = ch0 ? ch0[s] : 0; // Master L
-        m_outRingBuffer[slot + 1] = ch1 ? ch1[s] : 0; // Master R
-        m_outRingBuffer[slot + 2] = ch2 ? ch2[s] : 0; // Phones L
-        m_outRingBuffer[slot + 3] = ch3 ? ch3[s] : 0; // Phones R
+        const size_t slot = static_cast<size_t>(writeIdx & mask) * 4;
+        m_outRingBuffer[slot + 0] = ch0 ? ConvertInt32ToDitheredInt16(ch0[s]) : 0; // Master L
+        m_outRingBuffer[slot + 1] = ch1 ? ConvertInt32ToDitheredInt16(ch1[s]) : 0; // Master R
+        m_outRingBuffer[slot + 2] = ch2 ? ConvertInt32ToDitheredInt16(ch2[s]) : 0; // Phones L
+        m_outRingBuffer[slot + 3] = ch3 ? ConvertInt32ToDitheredInt16(ch3[s]) : 0; // Phones R
         writeIdx++;
     }
 
+    m_ditherState = rng;
     m_ringWriteFrames = writeIdx;
     m_samplePosition.store(curPos + static_cast<uint64_t>(m_bufferSize),
                            std::memory_order_release);
@@ -726,12 +765,24 @@ void Bcd2000AsioDriver::StreamingThreadMain() {
     // 2. If physical BCD2000 hardware is connected, drive ASIO callbacks locked
     //    to the WinUSB Isochronous OUT completion pipe (Endpoint 0x02).
     if (m_hardwareConnected && m_hAudioInterface) {
-        constexpr size_t kNumUrbs = 6;
-        constexpr size_t kPacketsPerUrb = 8; // 8 ms per URB (360 frames = 2880 B)
-        const ULONG packetSize = m_audioOutBytesPerInterval;
-        const ULONG urbBufferSize = static_cast<ULONG>(kPacketsPerUrb * packetSize);
-        const ULONG totalDmaBytes = static_cast<ULONG>(kNumUrbs * urbBufferSize);
-        const size_t framesPerUrb = urbBufferSize / 8; // 8 bytes per 4-ch S16_LE frame
+        // Choose packetsPerUrb so that requiredRingFrames (packetsPerUrb * 45 + 1)
+        // is ALWAYS strictly less than m_bufferSize. This guarantees that each URB
+        // completion invokes InvokeHostBufferSwitch() at most ONCE (never a double
+        // back-to-back callback that starves DAW DSP worker threads).
+        size_t packetsPerUrb = 4; // 4 ms (~176.4 frames) for bufferSize >= 256
+        size_t numUrbs = 8;       // 32 ms total USB Isochronous pipeline
+        if (m_bufferSize <= 64) {
+            packetsPerUrb = 1;    // 1 ms (~44.1 frames < 64)
+            numUrbs = 20;         // 20 ms total USB Isochronous pipeline
+        } else if (m_bufferSize <= 192) {
+            packetsPerUrb = 2;    // 2 ms (~88.2 frames < 128)
+            numUrbs = 12;         // 24 ms total USB Isochronous pipeline
+        }
+
+        const ULONG packetSize = m_audioOutBytesPerInterval; // 360 bytes (45 slots * 8 B)
+        const ULONG urbBufferSize = static_cast<ULONG>(packetsPerUrb * packetSize);
+        const ULONG totalDmaBytes = static_cast<ULONG>(numUrbs * urbBufferSize);
+        const size_t requiredRingFrames = packetsPerUrb * 45 + 1;
 
         std::vector<uint8_t> dmaBuffer(totalDmaBytes, 0);
         WINUSB_ISOCH_BUFFER_HANDLE hIsochBuffer = nullptr;
@@ -753,8 +804,8 @@ void Bcd2000AsioDriver::StreamingThreadMain() {
             bool inFlight = false;
         };
 
-        std::vector<UrbSlot> urbs(kNumUrbs);
-        for (size_t i = 0; i < kNumUrbs; ++i) {
+        std::vector<UrbSlot> urbs(numUrbs);
+        for (size_t i = 0; i < numUrbs; ++i) {
             urbs[i].offset = static_cast<ULONG>(i * urbBufferSize);
             urbs[i].length = urbBufferSize;
             urbs[i].ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -764,31 +815,7 @@ void Bcd2000AsioDriver::StreamingThreadMain() {
         bool useExplicitFrame = false;
         ULONG nextFrameNumber = 0;
 
-        auto FillAndSubmitUrb = [&](size_t idx) -> bool {
-            UrbSlot &slot = urbs[idx];
-            ResetEvent(slot.ov.hEvent);
-
-            // Invoke ASIO bufferSwitch until we have enough frames in the ring buffer
-            while ((m_ringWriteFrames - m_ringReadFrames) < framesPerUrb &&
-                   m_streamingActive.load(std::memory_order_acquire)) {
-                InvokeHostBufferSwitch();
-            }
-
-            // Copy framesPerUrb 4-channel frames into this URB's DMA slice
-            int16_t *dst = reinterpret_cast<int16_t *>(dmaBuffer.data() + slot.offset);
-            const size_t mask = kRingCapacityFrames - 1;
-            uint64_t readIdx = m_ringReadFrames;
-
-            for (size_t f = 0; f < framesPerUrb; ++f) {
-                size_t ringSlot = static_cast<size_t>(readIdx & mask) * 4;
-                dst[f * 4 + 0] = m_outRingBuffer[ringSlot + 0];
-                dst[f * 4 + 1] = m_outRingBuffer[ringSlot + 1];
-                dst[f * 4 + 2] = m_outRingBuffer[ringSlot + 2];
-                dst[f * 4 + 3] = m_outRingBuffer[ringSlot + 3];
-                readIdx++;
-            }
-            m_ringReadFrames = readIdx;
-
+        auto SubmitUrbBuffer = [&](UrbSlot &slot) -> bool {
             BOOL ok = FALSE;
             DWORD err = ERROR_SUCCESS;
 
@@ -844,9 +871,79 @@ void Bcd2000AsioDriver::StreamingThreadMain() {
             return false;
         };
 
+        auto FillAndSubmitUrb = [&](size_t idx) -> bool {
+            UrbSlot &slot = urbs[idx];
+            ResetEvent(slot.ov.hEvent);
+
+            // Invoke ASIO bufferSwitch until we have enough frames in the ring buffer.
+            // Because requiredRingFrames <= m_bufferSize, this loop executes at most ONCE
+            // per URB completion.
+            while ((m_ringWriteFrames - m_ringReadFrames) < requiredRingFrames &&
+                   m_streamingActive.load(std::memory_order_acquire)) {
+                InvokeHostBufferSwitch();
+            }
+
+            // Pack each 1-ms USB packet (360 bytes = 45 4-channel slots) using the exact
+            // 44.1 frames/ms cadence (9 packets of 44 frames + 1 packet of 45 frames =
+            // 441 frames per 10 ms = 44,100.0 Hz).
+            // The TUSB3200 hardware clocks the CS4220 I2S bus at 44,100.0 Hz via ACGFRQ=0x6A4B20
+            // and swaps X/Y buffers on every 1-ms USB SOF (DMACTL0=0x82, WABEN=0), while
+            // CPTCNF3=0xBC has TRSEN=0 (requiring all USB packets to carry 45 slots so
+            // OEPDCNTX2=45 never underflows to zero).
+            int16_t *urbBase =
+                reinterpret_cast<int16_t *>(dmaBuffer.data() + slot.offset);
+            const size_t mask = kRingCapacityFrames - 1;
+            uint64_t readIdx = m_ringReadFrames;
+
+            for (size_t pkt = 0; pkt < packetsPerUrb; ++pkt) {
+                int16_t *pktDst = urbBase + (pkt * 45 * 4);
+                const bool is45FramePacket = (m_packetPhase == 9);
+                m_packetPhase = (m_packetPhase + 1) % 10;
+
+                if (is45FramePacket) {
+                    for (size_t f = 0; f < 45; ++f) {
+                        const size_t ringSlot =
+                            static_cast<size_t>((readIdx + f) & mask) * 4;
+                        pktDst[f * 4 + 0] = m_outRingBuffer[ringSlot + 0];
+                        pktDst[f * 4 + 1] = m_outRingBuffer[ringSlot + 1];
+                        pktDst[f * 4 + 2] = m_outRingBuffer[ringSlot + 2];
+                        pktDst[f * 4 + 3] = m_outRingBuffer[ringSlot + 3];
+                    }
+                    readIdx += 45;
+                } else {
+                    for (size_t f = 0; f < 44; ++f) {
+                        const size_t ringSlot =
+                            static_cast<size_t>((readIdx + f) & mask) * 4;
+                        pktDst[f * 4 + 0] = m_outRingBuffer[ringSlot + 0];
+                        pktDst[f * 4 + 1] = m_outRingBuffer[ringSlot + 1];
+                        pktDst[f * 4 + 2] = m_outRingBuffer[ringSlot + 2];
+                        pktDst[f * 4 + 3] = m_outRingBuffer[ringSlot + 3];
+                    }
+                    // Populate the 45th guard slot (pktDst[44]) with the linear midpoint
+                    // between frame 43 and frame 44 (peeked without consuming frame 44).
+                    const size_t slot43 =
+                        static_cast<size_t>((readIdx + 43) & mask) * 4;
+                    const size_t slot44 =
+                        static_cast<size_t>((readIdx + 44) & mask) * 4;
+                    for (size_t c = 0; c < 4; ++c) {
+                        const int32_t s43 = m_outRingBuffer[slot43 + c];
+                        const int32_t s44 = m_outRingBuffer[slot44 + c];
+                        pktDst[44 * 4 + c] = static_cast<int16_t>((s43 + s44) / 2);
+                    }
+                    readIdx += 44;
+                }
+            }
+            m_ringReadFrames = readIdx;
+
+            return SubmitUrbBuffer(slot);
+        };
+
+        // Prime the USB Isochronous pipeline with zeroed silence URBs first so the
+        // host DAW is never hit with a burst of 8-9 synchronous callbacks at start().
         bool pipelineActive = true;
-        for (size_t i = 0; i < kNumUrbs; ++i) {
-            if (!FillAndSubmitUrb(i)) {
+        for (size_t i = 0; i < numUrbs; ++i) {
+            ResetEvent(urbs[i].ov.hEvent);
+            if (!SubmitUrbBuffer(urbs[i])) {
                 pipelineActive = false;
                 break;
             }
@@ -877,11 +974,11 @@ void Bcd2000AsioDriver::StreamingThreadMain() {
             if (!FillAndSubmitUrb(nextReap)) {
                 break;
             }
-            nextReap = (nextReap + 1) % kNumUrbs;
+            nextReap = (nextReap + 1) % numUrbs;
         }
 
         // Cleanly drain in-flight URBs and park DAC at 0
-        for (size_t i = 0; i < kNumUrbs; ++i) {
+        for (size_t i = 0; i < numUrbs; ++i) {
             if (urbs[i].inFlight) {
                 WaitForSingleObject(urbs[i].ov.hEvent, 150);
                 DWORD dummy = 0;
@@ -903,7 +1000,7 @@ void Bcd2000AsioDriver::StreamingThreadMain() {
 
         WinUsb_AbortPipe(m_hAudioInterface, m_audioOutPipe);
 
-        for (size_t i = 0; i < kNumUrbs; ++i) {
+        for (size_t i = 0; i < numUrbs; ++i) {
             if (urbs[i].ov.hEvent) {
                 CloseHandle(urbs[i].ov.hEvent);
             }

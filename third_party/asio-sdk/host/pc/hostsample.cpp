@@ -80,18 +80,26 @@ void FillOutputBuffers(long doubleBufferIndex) {
     const double incL = (kTwoPi * g_Host.toneFreqHz) / sr;
     const double incR = (kTwoPi * g_Host.toneFreqHz) / sr;
 
-    // Identify output buffer pointers for the current doubleBufferIndex (0 or 1)
-    int16_t *outPtrs[4] = {nullptr, nullptr, nullptr, nullptr};
+    // Identify output buffer pointers and sample types for the current doubleBufferIndex (0 or 1)
+    void *outPtrs[4] = {nullptr, nullptr, nullptr, nullptr};
+    ASIOSampleType outTypes[4] = {ASIOSTInt32LSB, ASIOSTInt32LSB, ASIOSTInt32LSB, ASIOSTInt32LSB};
     for (size_t i = 0; i < g_Host.bufferInfos.size(); ++i) {
         const ASIOBufferInfo &bi = g_Host.bufferInfos[i];
         if (bi.isInput == ASIOFalse && bi.channelNum >= 0 && bi.channelNum < 4) {
-            outPtrs[bi.channelNum] = static_cast<int16_t *>(bi.buffers[doubleBufferIndex]);
+            outPtrs[bi.channelNum] = bi.buffers[doubleBufferIndex];
+            if (i < g_Host.channelInfos.size()) {
+                outTypes[bi.channelNum] = g_Host.channelInfos[i].type;
+            }
         }
     }
 
     for (long f = 0; f < frames; ++f) {
-        const int16_t sampleL = static_cast<int16_t>(std::sin(g_Host.phaseL) * g_Host.amplitude * 32767.0);
-        const int16_t sampleR = static_cast<int16_t>(std::sin(g_Host.phaseR) * g_Host.amplitude * 32767.0);
+        const double valL = std::sin(g_Host.phaseL) * g_Host.amplitude;
+        const double valR = std::sin(g_Host.phaseR) * g_Host.amplitude;
+        const int16_t s16L = static_cast<int16_t>(valL * 32767.0);
+        const int16_t s16R = static_cast<int16_t>(valR * 32767.0);
+        const int32_t s32L = static_cast<int32_t>(valL * 2147483647.0);
+        const int32_t s32R = static_cast<int32_t>(valR * 2147483647.0);
 
         g_Host.phaseL += incL;
         if (g_Host.phaseL >= kTwoPi) {
@@ -102,12 +110,17 @@ void FillOutputBuffers(long doubleBufferIndex) {
             g_Host.phaseR -= kTwoPi;
         }
 
-        // Ch 0, 1: Master Output L/R (RCA)
-        if (outPtrs[0]) outPtrs[0][f] = sampleL;
-        if (outPtrs[1]) outPtrs[1][f] = sampleR;
-        // Ch 2, 3: Headphones Output L/R (TRS)
-        if (outPtrs[2]) outPtrs[2][f] = sampleL;
-        if (outPtrs[3]) outPtrs[3][f] = sampleR;
+        for (int ch = 0; ch < 4; ++ch) {
+            if (!outPtrs[ch]) {
+                continue;
+            }
+            const bool isLeft = (ch % 2 == 0);
+            if (outTypes[ch] == ASIOSTInt16LSB) {
+                static_cast<int16_t *>(outPtrs[ch])[f] = isLeft ? s16L : s16R;
+            } else {
+                static_cast<int32_t *>(outPtrs[ch])[f] = isLeft ? s32L : s32R;
+            }
+        }
     }
 
     if (g_Host.driver) {

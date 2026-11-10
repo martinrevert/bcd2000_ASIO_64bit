@@ -98,17 +98,21 @@ private:
     ASIOTime m_asioTime{};
 
     // Channel double buffers: [channel][doubleBufferIndex (0 or 1)]
-    std::vector<int16_t> m_inputStorage[kNumInputs][2];
-    std::vector<int16_t> m_outputStorage[kNumOutputs][2];
+    // Exposed to ASIO hosts as 32-bit signed PCM (ASIOSTInt32LSB) to prevent
+    // host-side 16-bit truncation grit and 0 dBFS float->int16 wrap-around.
+    std::vector<int32_t> m_inputStorage[kNumInputs][2];
+    std::vector<int32_t> m_outputStorage[kNumOutputs][2];
     bool m_inputActive[kNumInputs]{};
     bool m_outputActive[kNumOutputs]{};
 
     // Interleaved 4-channel S16_LE ring buffer for decoupling power-of-2 ASIO
-    // buffers from 45-frame/ms (360-byte) USB 1.1 Isochronous packets
+    // buffers from 44.1-frame/ms (360-byte) USB 1.1 Isochronous packets
     static constexpr size_t kRingCapacityFrames = 8192; // Power of 2
     std::vector<int16_t> m_outRingBuffer;               // kRingCapacityFrames * 4 int16_t
     uint64_t m_ringWriteFrames{0};
     uint64_t m_ringReadFrames{0};
+    uint32_t m_ditherState{0x12345678u};
+    uint32_t m_packetPhase{0};
 
     // Real-time streaming state
     std::atomic<bool> m_streamingActive{false};
@@ -116,6 +120,7 @@ private:
     long m_toggleIndex{0};
     std::atomic<uint64_t> m_samplePosition{0};
     std::atomic<uint64_t> m_systemTimeNs{0};
+    double m_smoothedSystemTimeNs{0.0};
     LARGE_INTEGER m_qpcFreq{};
 
     // WinUSB Hardware Handles
@@ -136,3 +141,4 @@ private:
 };
 
 #endif // BCD2000_ASIO_DRIVER_H
+
