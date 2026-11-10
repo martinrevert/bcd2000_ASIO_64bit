@@ -60,11 +60,13 @@ DEFINE_GUID(GUID_DEVINTERFACE_WINUSB_GENERIC, 0xdee824ef, 0x729b, 0x4a0e, 0x9c,
 
 // 52-byte hardware initialization handshake sequence (from Linux snd-bcd2000)
 static const uint8_t BCD2000_INIT_SEQUENCE[52] = {
-    0x07, 0x00, 0x00, 0x00, 0x78, 0x48, 0x1c, 0x81, 0xc4, 0x00, 0x00,
-    0x00, 0x5e, 0x53, 0x4a, 0xf7, 0x18, 0xfa, 0x11, 0xff, 0x6c, 0xf3,
-    0x90, 0xff, 0x00, 0x00, 0x00, 0x00, 0x51, 0x48, 0x1c, 0x81, 0x00,
-    0x00, 0x00, 0x00, 0x50, 0x48, 0x1c, 0x81, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    0x07, 0x00, 0x00, 0x00, 0x78, 0x48, 0x1c, 0x81,
+    0xc4, 0x00, 0x00, 0x00, 0x5e, 0x53, 0x4a, 0xf7,
+    0x18, 0xfa, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00};
 
 // ============================================================================
 // Data Structures and Global State
@@ -157,20 +159,28 @@ std::string FormatWin32Error(DWORD errorCode) {
 
 /**
  * @brief Sends a formatted BCD2000 command packet to Endpoint 0x01.
- * Frame layout: [0x03, 0x00, len, MIDI_BYTES..., pad to 64 bytes]
+ * 
+ * Protocol specification (Linux kernel snd-bcd2000):
+ *  Frame layout: [0x03, 0x00, MIDI_BYTES..., pad to 64 bytes]
+ *  - Byte 0: 0x03 (device_cmd_prefix[0])
+ *  - Byte 1: 0x00 (device_cmd_prefix[1])
+ *  - Byte 2: MIDI Byte 1 (Status, e.g. 0x90 Note On or 0xB0 CC)
+ *  - Byte 3: MIDI Byte 2 (Data1, e.g. Note number or CC ID)
+ *  - Byte 4: MIDI Byte 3 (Data2, e.g. Velocity 0x7F/0x00 or CC Value)
+ *  - Padded to exactly 64 bytes (MaximumPacketSize) with zeros.
+ *  Note: There is NO length byte between prefix and MIDI bytes.
  */
 bool SendBcdMidiFrame(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
                       const uint8_t *midiPayload, uint8_t payloadLen) {
   if (!hWinUsb || outPipeId == 0 || !midiPayload || payloadLen == 0 ||
-      payloadLen > 61) {
+      payloadLen > 62) {
     return false;
   }
 
   uint8_t frame[64] = {0};
   frame[0] = 0x03;
   frame[1] = 0x00;
-  frame[2] = payloadLen;
-  memcpy(&frame[3], midiPayload, payloadLen);
+  memcpy(&frame[2], midiPayload, payloadLen);
 
   std::lock_guard<std::mutex> lock(g_UsbWriteMutex);
   ULONG bytesWritten = 0;
@@ -189,25 +199,19 @@ void SetAllLedsState(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
                      bool turnOn) {
   uint8_t val = turnOn ? 0x7F : 0x00;
 
-  // Batch 1: Note On Buttons (0x90, notes 0 to 19)
-  uint8_t noteBatch[60];
-  for (uint8_t i = 0; i < 20; ++i) {
-    noteBatch[i * 3 + 0] = 0x90;
-    noteBatch[i * 3 + 1] = i;
-    noteBatch[i * 3 + 2] = val;
+  // 1. Buttons (Note On 0x90, notes 0 to 19 / 0x13)
+  for (uint8_t i = 0; i <= 0x13; ++i) {
+    SendBcdSingleMidi(hWinUsb, outPipeId, 0x90, i, val);
     g_LedStates[(0x90 << 8) | i] = turnOn;
+    Sleep(2);
   }
-  SendBcdMidiFrame(hWinUsb, outPipeId, noteBatch, sizeof(noteBatch));
 
-  // Batch 2: Control Change Kill & FX switches (0xB0, CC 0x0A to 0x1D)
-  uint8_t ccBatch[60];
-  for (uint8_t i = 0; i < 20; ++i) {
-    ccBatch[i * 3 + 0] = 0xB0;
-    ccBatch[i * 3 + 1] = 0x0A + i;
-    ccBatch[i * 3 + 2] = val;
-    g_LedStates[(0xB0 << 8) | (0x0A + i)] = turnOn;
+  // 2. Kill switches & FX Section (Control Change 0xB0, CC 0x0A to 0x1F)
+  for (uint8_t i = 0x0A; i <= 0x1F; ++i) {
+    SendBcdSingleMidi(hWinUsb, outPipeId, 0xB0, i, val);
+    g_LedStates[(0xB0 << 8) | i] = turnOn;
+    Sleep(2);
   }
-  SendBcdMidiFrame(hWinUsb, outPipeId, ccBatch, sizeof(ccBatch));
 }
 
 // ============================================================================
@@ -366,10 +370,13 @@ ControlMapping LookupControl(uint8_t status, uint8_t channel, uint8_t data1) {
 
 void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR inPipeId,
                             UCHAR outPipeId) {
-  // Set 50 ms timeout on IN pipe for responsive thread shutdown
-  ULONG inTimeoutMs = 50;
+  // Configure IN pipe timeout (100 ms) and Auto-Clear Stall
+  ULONG inTimeoutMs = 100;
   WinUsb_SetPipePolicy(hWinUsb, inPipeId, PIPE_TRANSFER_TIMEOUT,
                        sizeof(inTimeoutMs), &inTimeoutMs);
+  UCHAR autoClearStall = 1;
+  WinUsb_SetPipePolicy(hWinUsb, inPipeId, AUTO_CLEAR_STALL,
+                       sizeof(autoClearStall), &autoClearStall);
 
   uint8_t buffer[64];
 
@@ -381,12 +388,41 @@ void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR inPipeId,
     if (ok && bytesRead > 0) {
       g_TotalPacketsReceived.fetch_add(1);
 
-      // Process stream of 3-byte MIDI packets
-      for (ULONG i = 0; i + 2 < bytesRead; i += 3) {
+      // Determine framing:
+      // Linux snd-bcd2000 protocol:
+      // Byte 0 = payload length (e.g. 3, 6, 9)
+      // Byte 1.. = raw MIDI stream [status, data1, data2, ...]
+      ULONG midiStart = 0;
+      ULONG midiLen = bytesRead;
+
+      if (buffer[0] <= 63 && buffer[0] > 0 && bytesRead > 1 && (buffer[1] & 0x80) != 0) {
+        // Standard BCD2000 hardware packet format: buffer[0] = length
+        midiStart = 1;
+        midiLen = std::min<ULONG>(static_cast<ULONG>(buffer[0]), bytesRead - 1);
+      } else if (bytesRead >= 3 && buffer[0] == 0x03 && buffer[1] == 0x00 && (buffer[2] & 0x80) != 0) {
+        // Echoed 2-byte command header [0x03, 0x00]
+        midiStart = 2;
+        midiLen = bytesRead - 2;
+      } else if ((buffer[0] & 0x80) != 0) {
+        // Direct raw MIDI stream starting at index 0
+        midiStart = 0;
+        midiLen = bytesRead;
+      }
+
+      bool anyEventDecoded = false;
+
+      // Process 3-byte MIDI events within the extracted payload
+      for (ULONG i = midiStart; i + 2 < midiStart + midiLen; i += 3) {
         uint8_t status = buffer[i];
         uint8_t d1 = buffer[i + 1];
         uint8_t d2 = buffer[i + 2];
 
+        // Valid MIDI status bytes always have bit 7 set
+        if ((status & 0x80) == 0) {
+          continue;
+        }
+
+        anyEventDecoded = true;
         uint8_t msgType = status & 0xF0;
         uint8_t channel = (status & 0x0F) + 1;
 
@@ -404,7 +440,7 @@ void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR inPipeId,
         uint16_t stateKey = (static_cast<uint16_t>(status) << 8) | d1;
         g_ControlValues[stateKey] = d2;
 
-        // Format detail value
+        // Format human-readable detail value
         if (mapping.type == "FADER" || mapping.type == "KNOB") {
           ev.detailValue =
               FormatProgressBar(d2) + " [Raw: " + std::to_string(d2) + "]";
@@ -417,14 +453,14 @@ void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR inPipeId,
           int pitchVal = (static_cast<int>(d2) << 7) | static_cast<int>(d1);
           int normalized = pitchVal - 8192;
           ev.detailValue = "Value: " + std::to_string(pitchVal) +
-                           " (Center offset: " + (normalized >= 0 ? "+" : "") +
+                           " (Offset: " + (normalized >= 0 ? "+" : "") +
                            std::to_string(normalized) + ")";
         } else if (mapping.type == "BUTTON") {
           bool isPressed =
               (msgType == 0x90 && d2 > 0) || (msgType == 0xB0 && d2 >= 0x40);
           ev.detailValue = isPressed ? "PRESIONADO (Down)" : "LIBERADO (Up)";
 
-          // Bi-directional LED toggle on press action
+          // Instant physical feedback: toggle LED on press action
           if (mapping.hasLed && isPressed) {
             bool currentLed = g_LedStates[stateKey];
             bool newLed = !currentLed;
@@ -433,7 +469,7 @@ void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR inPipeId,
             ev.ledToggled = true;
             ev.newLedState = newLed;
 
-            // Echo LED state to Endpoint 0x01
+            // Transmit updated LED state to Endpoint 0x01
             SendBcdSingleMidi(hWinUsb, outPipeId,
                               (msgType == 0xB0 ? 0xB0 : 0x90), d1,
                               newLed ? 0x7F : 0x00);
@@ -448,12 +484,30 @@ void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR inPipeId,
         std::lock_guard<std::mutex> lock(g_EventMutex);
         g_EventQueue.push(ev);
       }
+
+      // If bytes were received but couldn't be parsed into 3-byte MIDI, display raw hex
+      if (!anyEventDecoded) {
+        std::ostringstream oss;
+        oss << "Bytes (" << bytesRead << "): ";
+        for (ULONG b = 0; b < bytesRead && b < 16; ++b) {
+          oss << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
+              << (int)buffer[b] << " ";
+        }
+        DecodedControlEvent rawEv;
+        rawEv.timestamp = std::chrono::system_clock::now();
+        rawEv.controlType = "RAW_USB";
+        rawEv.controlName = "Trama USB Sin Mapear";
+        rawEv.detailValue = oss.str();
+
+        std::lock_guard<std::mutex> lock(g_EventMutex);
+        g_EventQueue.push(rawEv);
+      }
     } else {
       DWORD err = GetLastError();
       if (err != ERROR_SEM_TIMEOUT) {
         // If device unplugged or severe pipe error
         if (err == ERROR_DEVICE_NOT_CONNECTED || err == ERROR_GEN_FAILURE) {
-          std::cerr << "\n[!] Device communication lost: "
+          std::cerr << "\n[!] Comunicacion USB perdida: "
                     << FormatWin32Error(err) << "\n";
           g_Running.store(false);
           break;

@@ -55,9 +55,9 @@ DEFINE_GUID(GUID_DEVINTERFACE_WINUSB_GENERIC,
 static const uint8_t BCD2000_INIT_SEQUENCE[52] = {
     0x07, 0x00, 0x00, 0x00, 0x78, 0x48, 0x1c, 0x81,
     0xc4, 0x00, 0x00, 0x00, 0x5e, 0x53, 0x4a, 0xf7,
-    0x18, 0xfa, 0x11, 0xff, 0x6c, 0xf3, 0x90, 0xff,
-    0x00, 0x00, 0x00, 0x00, 0x51, 0x48, 0x1c, 0x81,
-    0x00, 0x00, 0x00, 0x00, 0x50, 0x48, 0x1c, 0x81,
+    0x18, 0xfa, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00
 };
@@ -171,12 +171,11 @@ const char* PipeTypeToString(USBD_PIPE_TYPE pipeType) {
 /**
  * @brief Sends a formatted BCD2000 command packet to Endpoint 0x01.
  * 
- * Hardware Protocol Specifications:
+ * Hardware Protocol Specifications (from Linux kernel snd-bcd2000):
  *  Byte 0: 0x03 (Command prefix byte 1 - device_cmd_prefix[0])
  *  Byte 1: 0x00 (Command prefix byte 2 - device_cmd_prefix[1])
- *  Byte 2: len (Payload length in bytes, 1 <= len <= 61)
- *  Byte 3..(3+len-1): Raw MIDI stream bytes (0x90 Note On, 0xB0 CC, etc.)
- *  Byte (3+len)..63: Zero-padded up to BUFSIZE (64 bytes)
+ *  Byte 2..: Raw MIDI stream bytes (0x90 Note On, 0xB0 CC, etc.)
+ *  Zero-padded up to BUFSIZE (64 bytes).
  *
  * Buffer size sent to WinUSB: exactly 64 bytes (matching MaximumPacketSize).
  */
@@ -186,15 +185,14 @@ bool SendBcdMidiFrame(
     const uint8_t* midiPayload,
     uint8_t payloadLen)
 {
-    if (!hWinUsb || outPipeId == 0 || !midiPayload || payloadLen == 0 || payloadLen > 61) {
+    if (!hWinUsb || outPipeId == 0 || !midiPayload || payloadLen == 0 || payloadLen > 62) {
         return false;
     }
 
     uint8_t frame[64] = { 0 };
     frame[0] = 0x03;
     frame[1] = 0x00;
-    frame[2] = payloadLen;
-    memcpy(&frame[3], midiPayload, payloadLen);
+    memcpy(&frame[2], midiPayload, payloadLen);
 
     ULONG bytesWritten = 0;
     BOOL ok = WinUsb_WritePipe(hWinUsb, outPipeId, frame, sizeof(frame), &bytesWritten, nullptr);
@@ -785,8 +783,19 @@ int RunDiagnostic(const GUID* customGuid) {
                           << bytesRead << " bytes de Endpoint 0x" << std::hex << (int)targetInPipe << std::dec << ":\n";
                 PrintHexDump(readBuffer, bytesRead, "    ");
 
+                // Determine framing from Linux kernel snd-bcd2000
+                ULONG midiStart = 0;
+                ULONG midiLen = bytesRead;
+                if (readBuffer[0] <= 63 && readBuffer[0] > 0 && bytesRead > 1 && (readBuffer[1] & 0x80) != 0) {
+                    midiStart = 1;
+                    midiLen = std::min<ULONG>(static_cast<ULONG>(readBuffer[0]), bytesRead - 1);
+                } else if (bytesRead >= 3 && readBuffer[0] == 0x03 && readBuffer[1] == 0x00 && (readBuffer[2] & 0x80) != 0) {
+                    midiStart = 2;
+                    midiLen = bytesRead - 2;
+                }
+
                 // Decode incoming MIDI packets
-                for (ULONG b = 0; b + 2 < bytesRead; b += 3) {
+                for (ULONG b = midiStart; b + 2 < midiStart + midiLen; b += 3) {
                     uint8_t status = readBuffer[b];
                     uint8_t d1 = readBuffer[b + 1];
                     uint8_t d2 = readBuffer[b + 2];
