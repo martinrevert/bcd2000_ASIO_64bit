@@ -6,14 +6,18 @@
  * Target Hardware: Behringer BCD2000 DJ Controller (VID: 0x1397, PID: 0x00BD)
  * Driver: WinUSB (x64)
  *
- * Architecture:
- *  - Dynamically discovers all WinUSB interfaces (Interface 0 and Associated Interfaces).
- *  - Correctly routes MIDI/LED traffic to the interface owning Interrupt Endpoints 0x01 / 0x81.
- *  - Correctly identifies Audio Streaming traffic on Isochronous Endpoints 0x02 / 0x83.
- *  - Transmits 52-byte 8051 Handshake sequence on the proper MIDI OUT pipe.
- *  - Continuously captures real-time control events on Endpoint 0x81 (IN).
- *  - Real-time progress bars: [========|       ] 50% for all faders and knobs.
- *  - Bi-directional hardware LED feedback for buttons and kill switches on Endpoint 0x01 (OUT).
+ * Hardware Protocol (verified against Linux kernel sound/usb/bcd2000/bcd2000.c):
+ *  1. Handshake (EP 0x01 OUT): 52-byte bcd2000_init_sequence.
+ *  2. Telemetry (EP 0x81 IN): 60/64-byte interrupt packets where:
+ *       - buffer[0] = payloadLen (number of valid MIDI stream bytes in packet, 1..63).
+ *       - buffer[1 .. payloadLen] = raw MIDI stream bytes (uses MIDI Running Status!).
+ *       - buffer[payloadLen+1 .. end] = uninitialized 8051 RAM tail (MUST be ignored).
+ *  3. LED Commands (EP 0x01 OUT): Full 64-byte (BUFSIZE) packets where:
+ *       - frame[0] = 0x03 (device_cmd_prefix[0])
+ *       - frame[1] = 0x00 (device_cmd_prefix[1])
+ *       - frame[2] = payloadLen (number of MIDI bytes, e.g. 3 or 60)
+ *       - frame[3 .. 3+payloadLen-1] = MIDI bytes (0x90/0xB0, id, 0x7F/0x00)
+ *       - frame[3+payloadLen .. 63] = zero-padded to 64 bytes.
  */
 
 #include <windows.h>
@@ -27,6 +31,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -46,18 +51,20 @@ constexpr uint16_t BCD2000_PID = 0x00BD;
 DEFINE_GUID(GUID_DEVINTERFACE_WINUSB_GENERIC, 0xdee824ef, 0x729b, 0x4a0e, 0x9c,
             0x14, 0xb7, 0x11, 0x7d, 0x33, 0xa8, 0x17);
 
-// 52-byte hardware initialization handshake sequence (from Linux snd-bcd2000)
+/**
+ * @brief Complete 52-byte hardware initialization sequence from Linux snd-bcd2000.
+ */
 static const uint8_t BCD2000_INIT_SEQUENCE[52] = {
     0x07, 0x00, 0x00, 0x00, 0x78, 0x48, 0x1c, 0x81,
     0xc4, 0x00, 0x00, 0x00, 0x5e, 0x53, 0x4a, 0xf7,
-    0x18, 0xfa, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x18, 0xfa, 0x11, 0xff, 0x6c, 0xf3, 0x90, 0xff,
+    0x00, 0x00, 0x00, 0x00, 0x51, 0x48, 0x1c, 0x81,
+    0x00, 0x00, 0x00, 0x00, 0x50, 0x48, 0x1c, 0x81,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00};
 
 // ============================================================================
-// USB Device Context & Topology
+// USB Device Context & Event Structures
 // ============================================================================
 
 struct BcdUsbContext {
@@ -74,27 +81,24 @@ struct BcdUsbContext {
 };
 
 struct DecodedControlEvent {
-  std::chrono::system_clock::time_point timestamp;
   uint8_t status = 0;
   uint8_t channel = 1;
   uint8_t data1 = 0;
   uint8_t data2 = 0;
   std::string rawHex;
-  std::string controlType; // "FADER", "KNOB", "BUTTON", "JOG", "PITCH", "MIDI", "RAW_USB"
+  std::string controlType; // "FADER", "KNOB", "BUTTON", "JOG", "PITCH", "MIDI"
   std::string controlName;
   std::string detailValue;
   bool ledToggled = false;
   bool newLedState = false;
 };
 
-// Global flags and synchronization
+// Global synchronization and state
 static std::atomic<bool> g_Running{true};
-static std::atomic<int> g_LedSendMode{0}; // 0 = 5B (Linux), 1 = 3B (MIDI), 2 = 64B, 3 = 6B
 static std::mutex g_UsbWriteMutex;
 static std::mutex g_EventMutex;
 static std::queue<DecodedControlEvent> g_EventQueue;
 
-// LED and Control States
 static std::map<uint16_t, bool> g_LedStates;
 static std::map<uint16_t, uint8_t> g_ControlValues;
 static std::atomic<uint64_t> g_TotalPacketsReceived{0};
@@ -133,24 +137,31 @@ std::string HexByte(uint8_t b) {
 
 std::string FormatWin32Error(DWORD errorCode) {
   LPWSTR buffer = nullptr;
-  FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                     FORMAT_MESSAGE_IGNORE_INSERTS,
-                 nullptr, errorCode, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                 reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+  DWORD size = FormatMessageW(
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+          FORMAT_MESSAGE_IGNORE_INSERTS,
+      nullptr, errorCode, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+      reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
   std::ostringstream oss;
   oss << "0x" << std::hex << errorCode << std::dec;
-  if (buffer) {
-    oss << " (" << WideToUtf8(buffer) << ")";
+  if (size > 0 && buffer) {
+    std::wstring wmsg(buffer, size);
     LocalFree(buffer);
+    while (!wmsg.empty() &&
+           (wmsg.back() == L'\r' || wmsg.back() == L'\n' || wmsg.back() == L' ')) {
+      wmsg.pop_back();
+    }
+    oss << " (" << WideToUtf8(wmsg) << ")";
   }
   return oss.str();
 }
 
 /**
- * @brief Formats a standard 0..127 unipolar progress bar: [========|       ] 53%
+ * @brief Formats a 0..127 unipolar percentage progress bar: [========|       ] 53%
  */
 std::string FormatProgressBar(uint8_t value, int width = 16) {
-  int filled = (value * width) / 127;
+  uint8_t clamped = std::min<uint8_t>(value, 127);
+  int filled = (clamped * width) / 127;
   std::string bar = "[";
   for (int i = 0; i < width; ++i) {
     if (i < filled)
@@ -160,14 +171,14 @@ std::string FormatProgressBar(uint8_t value, int width = 16) {
     else
       bar += " ";
   }
-  int pct = (value * 100) / 127;
+  int pct = (clamped * 100) / 127;
   std::ostringstream oss;
-  oss << bar << "] " << std::setw(3) << pct << "%";
+  oss << bar << "] " << std::setw(3) << std::setfill(' ') << pct << "%";
   return oss.str();
 }
 
 /**
- * @brief Formats a bipolar progress bar (-8192..+8191): [    |====   ] +30%
+ * @brief Formats a bipolar percentage progress bar (-8192..+8191): [    |====   ] +30%
  */
 std::string FormatBipolarBar(int value, int maxRange = 8192, int width = 16) {
   int half = width / 2;
@@ -177,129 +188,110 @@ std::string FormatBipolarBar(int value, int maxRange = 8192, int width = 16) {
   for (int i = -half; i <= half; ++i) {
     if (i == 0) {
       bar += "|";
-    } else if ((pos < 0 && i >= pos && i < 0) || (pos > 0 && i <= pos && i > 0)) {
+    } else if ((pos < 0 && i >= pos && i < 0) ||
+               (pos > 0 && i <= pos && i > 0)) {
       bar += "=";
     } else {
       bar += " ";
     }
   }
-  int pct = (value * 100) / maxRange;
+  int pct = std::clamp((value * 100) / maxRange, -100, 100);
   std::ostringstream oss;
-  oss << bar << "] " << (pct >= 0 ? "+" : "") << std::setw(3) << pct << "%";
+  oss << bar << "] " << (pct >= 0 ? "+" : "") << std::setw(3)
+      << std::setfill(' ') << pct << "%";
   return oss.str();
 }
 
-const char* GetModeName(int mode) {
-  switch (mode) {
-  case 0: return "Modo A (5B: [0x03, 0x00, status, d1, d2] - Linux snd-bcd2000)";
-  case 1: return "Modo B (3B: [status, d1, d2] - Pure MIDI directo)";
-  case 2: return "Modo C (64B: [0x03, 0x00, status, d1, d2, pad 0...])";
-  case 3: return "Modo D (6B: [0x03, 0x00, 0x03, status, d1, d2])";
-  default: return "Desconocido";
+// ============================================================================
+// USB LED & MIDI Command Transmission Engine (Endpoint 0x01 OUT)
+// ============================================================================
+
+/**
+ * @brief Sends a formatted 64-byte BCD2000 command frame to Endpoint 0x01.
+ *
+ * Exact framing from Linux kernel sound/usb/bcd2000/bcd2000.c (bcd2000_midi_send):
+ *  - Byte 0: 0x03 (device_cmd_prefix[0])
+ *  - Byte 1: 0x00 (device_cmd_prefix[1])
+ *  - Byte 2: payloadLen (number of MIDI bytes in this frame, 1..61)
+ *  - Byte 3..(3+payloadLen-1): Raw MIDI stream bytes
+ *  - Byte (3+payloadLen)..63: Zero-padded to BUFSIZE (64 bytes)
+ */
+bool SendBcdMidiFrame(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
+                      const uint8_t *midiPayload, uint8_t payloadLen) {
+  if (!hWinUsb || outPipeId == 0 || !midiPayload || payloadLen == 0 ||
+      payloadLen > 61) {
+    return false;
   }
-}
-
-// ============================================================================
-// USB Transmission Engine (Endpoint 0x01 OUT on MIDI Interface)
-// ============================================================================
-
-bool SendBcdSingleMidi(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
-                       uint8_t status, uint8_t data1, uint8_t data2,
-                       int mode = -1) {
-  if (!hWinUsb || outPipeId == 0) return false;
-  if (mode < 0) mode = g_LedSendMode.load();
 
   uint8_t frame[64] = {0};
-  ULONG sendLen = 0;
-
-  switch (mode) {
-  case 0: // Linux kernel snd-bcd2000: 2-byte prefix + 3-byte MIDI = 5 bytes
-    frame[0] = 0x03;
-    frame[1] = 0x00;
-    frame[2] = status;
-    frame[3] = data1;
-    frame[4] = data2;
-    sendLen = 5;
-    break;
-
-  case 1: // Direct raw MIDI: 3 bytes
-    frame[0] = status;
-    frame[1] = data1;
-    frame[2] = data2;
-    sendLen = 3;
-    break;
-
-  case 2: // Padded to full 64 bytes
-    frame[0] = 0x03;
-    frame[1] = 0x00;
-    frame[2] = status;
-    frame[3] = data1;
-    frame[4] = data2;
-    sendLen = 64;
-    break;
-
-  case 3: // 3-byte prefix (0x03, 0x00, len=3) + 3-byte MIDI = 6 bytes
-    frame[0] = 0x03;
-    frame[1] = 0x00;
-    frame[2] = 0x03;
-    frame[3] = status;
-    frame[4] = data1;
-    frame[5] = data2;
-    sendLen = 6;
-    break;
-
-  default:
-    frame[0] = 0x03;
-    frame[1] = 0x00;
-    frame[2] = status;
-    frame[3] = data1;
-    frame[4] = data2;
-    sendLen = 5;
-    break;
-  }
+  frame[0] = 0x03;
+  frame[1] = 0x00;
+  frame[2] = payloadLen;
+  std::memcpy(&frame[3], midiPayload, payloadLen);
 
   std::lock_guard<std::mutex> lock(g_UsbWriteMutex);
   ULONG bytesWritten = 0;
-  BOOL ok = WinUsb_WritePipe(hWinUsb, outPipeId, frame, sendLen, &bytesWritten, nullptr);
-
-  if (ok && bytesWritten == sendLen) {
+  BOOL ok = WinUsb_WritePipe(hWinUsb, outPipeId, frame, sizeof(frame),
+                             &bytesWritten, nullptr);
+  if (ok && bytesWritten == sizeof(frame)) {
     g_TotalLedCommandsSent.fetch_add(1);
     return true;
   }
 
   DWORD err = GetLastError();
-  std::cerr << "  [-] Error en WinUsb_WritePipe (EP 0x" << std::hex << (int)outPipeId
-            << std::dec << ", len " << sendLen << ", modo " << mode << "): "
+  std::cerr << "  [-] Error en WinUsb_WritePipe (EP 0x" << std::hex
+            << static_cast<int>(outPipeId) << std::dec << "): "
             << FormatWin32Error(err) << "\n";
   return false;
 }
 
 /**
- * @brief Sets all LEDs on the BCD2000 controller to ON or OFF with gentle timing.
+ * @brief Sends a single 3-byte MIDI message wrapped in the 64-byte BCD2000 frame.
+ */
+bool SendBcdSingleMidi(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
+                       uint8_t status, uint8_t data1, uint8_t data2) {
+  uint8_t msg[3] = {status, data1, data2};
+  return SendBcdMidiFrame(hWinUsb, outPipeId, msg, sizeof(msg));
+}
+
+/**
+ * @brief Illuminates or turns off all physical LEDs on the BCD2000 using the
+ *        exact batch + individual 64-byte framing verified in Milestone 1.
  */
 void SetAllLedsState(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
-                     bool turnOn, int mode = -1) {
+                     bool turnOn) {
   uint8_t val = turnOn ? 0x7F : 0x00;
 
-  // Deck A & Transport Buttons (Note On 0x90, notes 0 to 19 / 0x13)
-  for (uint8_t note = 0; note <= 0x13; ++note) {
-    SendBcdSingleMidi(hWinUsb, outPipeId, 0x90, note, val, mode);
-    g_LedStates[(0x90 << 8) | note] = turnOn;
-    Sleep(3);
+  // 1. Batch Frame A: Transport, Cues & Loops (Note On 0x90, notes 0x00..0x13)
+  uint8_t noteBatch[60];
+  for (uint8_t i = 0; i < 20; ++i) {
+    noteBatch[i * 3 + 0] = 0x90;
+    noteBatch[i * 3 + 1] = i;
+    noteBatch[i * 3 + 2] = val;
   }
+  SendBcdMidiFrame(hWinUsb, outPipeId, noteBatch, sizeof(noteBatch));
+  Sleep(10);
 
-  // Deck B Buttons (Note On 0x91, notes 0 to 19 / 0x13)
-  for (uint8_t note = 0; note <= 0x13; ++note) {
-    SendBcdSingleMidi(hWinUsb, outPipeId, 0x91, note, val, mode);
-    g_LedStates[(0x91 << 8) | note] = turnOn;
-    Sleep(3);
+  // 2. Batch Frame B: Kill switches, EQ & FX (CC 0xB0, 0x0A..0x1D)
+  uint8_t ccBatch[60];
+  for (uint8_t i = 0; i < 20; ++i) {
+    ccBatch[i * 3 + 0] = 0xB0;
+    ccBatch[i * 3 + 1] = 0x0A + i;
+    ccBatch[i * 3 + 2] = val;
   }
+  SendBcdMidiFrame(hWinUsb, outPipeId, ccBatch, sizeof(ccBatch));
+  Sleep(10);
 
-  // Kill switches & FX (Control Change 0xB0, CC 0x10 to 0x1F)
-  for (uint8_t cc = 0x10; cc <= 0x1F; ++cc) {
-    SendBcdSingleMidi(hWinUsb, outPipeId, 0xB0, cc, val, mode);
-    g_LedStates[(0xB0 << 8) | cc] = turnOn;
-    Sleep(3);
+  // 3. Individual 64-byte frames across all Note and CC LED addresses
+  for (uint8_t midino = 0x00; midino <= 0x25; ++midino) {
+    SendBcdSingleMidi(hWinUsb, outPipeId, 0x90, midino, val);
+    g_LedStates[(0x90 << 8) | midino] = turnOn;
+    Sleep(5);
+  }
+  for (uint8_t midino = 0x0A; midino <= 0x20; ++midino) {
+    SendBcdSingleMidi(hWinUsb, outPipeId, 0xB0, midino, val);
+    g_LedStates[(0xB0 << 8) | midino] = turnOn;
+    Sleep(5);
   }
 }
 
@@ -310,90 +302,154 @@ void SetAllLedsState(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
 struct ControlMapping {
   std::string type;
   std::string name;
-  bool isContinuous;
 };
 
 ControlMapping LookupControl(uint8_t status, uint8_t channel, uint8_t data1) {
   uint8_t msgType = status & 0xF0;
 
-  if (msgType == 0x90 || msgType == 0x80) { // Note On / Note Off (Buttons)
-    std::string deck = (channel == 1 ? "Deck A " : (channel == 2 ? "Deck B " : "Ch" + std::to_string(channel) + " "));
+  if (msgType == 0x90 || msgType == 0x80) { // Note On / Note Off (Physical Buttons)
+    std::string deck =
+        (channel == 1 ? "Deck A "
+                      : (channel == 2 ? "Deck B "
+                                      : "Ch" + std::to_string(channel) + " "));
     switch (data1) {
-    case 0x00: return {"BUTTON", deck + "Loop In", false};
-    case 0x01: return {"BUTTON", deck + "Loop Out", false};
-    case 0x02: return {"BUTTON", deck + "Loop Exit / Reloop", false};
-    case 0x03: return {"BUTTON", deck + "Cue 1", false};
-    case 0x04: return {"BUTTON", deck + "Cue 2", false};
-    case 0x05: return {"BUTTON", deck + "Cue 3", false};
-    case 0x06: return {"BUTTON", deck + "Cue 4", false};
-    case 0x07: return {"BUTTON", deck + "Search << (Back)", false};
-    case 0x08: return {"BUTTON", deck + "Search >> (Fwd)", false};
-    case 0x09: return {"BUTTON", deck + "Pitch Bend (-)", false};
-    case 0x0A: return {"BUTTON", deck + "Pitch Bend (+)", false};
-    case 0x0B: return {"BUTTON", deck + "Sync", false};
-    case 0x0C: return {"BUTTON", deck + "Cue", false};
-    case 0x0D: return {"BUTTON", deck + "Play / Pause", false};
-    case 0x0E: return {"BUTTON", deck + "Headphone Cue (PFL)", false};
-    case 0x0F: return {"BUTTON", deck + "Brake / FX", false};
-    case 0x10: return {"BUTTON", deck + "Master Tempo (Keylock)", false};
-    case 0x11: return {"BUTTON", deck + "Jog Touch Active", false};
-    case 0x12: return {"BUTTON", deck + "Loop 1/2x", false};
-    case 0x13: return {"BUTTON", deck + "Loop 2x", false};
+    case 0x00: return {"BUTTON", deck + "Boton 0x00 (Loop / Control)"};
+    case 0x01: return {"BUTTON", deck + "Boton 0x01 (Play / Control)"};
+    case 0x02: return {"BUTTON", deck + "Boton 0x02 (Cue / Control)"};
+    case 0x03: return {"BUTTON", deck + "Boton 0x03"};
+    case 0x04: return {"BUTTON", deck + "Boton 0x04"};
+    case 0x05: return {"BUTTON", deck + "Boton 0x05"};
+    case 0x06: return {"BUTTON", deck + "Boton 0x06"};
+    case 0x07: return {"BUTTON", deck + "Boton 0x07 (Search <<)"};
+    case 0x08: return {"BUTTON", deck + "Boton 0x08 (Search >>)"};
+    case 0x09: return {"BUTTON", deck + "Boton 0x09 (Pitch Bend -)"};
+    case 0x0A: return {"BUTTON", deck + "Boton 0x0A (Pitch Bend +)"};
+    case 0x0B: return {"BUTTON", deck + "Boton 0x0B (Sync)"};
+    case 0x0C: return {"BUTTON", deck + "Boton 0x0C (Cue)"};
+    case 0x0D: return {"BUTTON", deck + "Boton 0x0D (Play / Pause)"};
+    case 0x0E: return {"BUTTON", deck + "Boton 0x0E (Headphone Cue)"};
+    case 0x0F: return {"BUTTON", deck + "Boton 0x0F (FX / Brake)"};
+    case 0x10: return {"BUTTON", deck + "Boton 0x10 (Keylock)"};
+    case 0x11: return {"BUTTON", deck + "Boton 0x11 (Scratch / Jog)"};
+    case 0x12: return {"BUTTON", deck + "Boton 0x12 (Kill High A)"};
+    case 0x13: return {"BUTTON", deck + "Boton 0x13 (Kill Mid A)"};
+    case 0x14: return {"BUTTON", deck + "Boton 0x14 (Kill Low A)"};
+    case 0x15: return {"BUTTON", deck + "Boton 0x15 (Kill High B)"};
+    case 0x16: return {"BUTTON", deck + "Boton 0x16 (Kill Mid B)"};
+    case 0x17: return {"BUTTON", deck + "Boton 0x17 (Kill Low B)"};
     default:
-      return {"BUTTON", deck + "Boton 0x" + HexByte(data1) + " (" + std::to_string(data1) + ")", false};
+      return {"BUTTON",
+              deck + "Boton Note 0x" + HexByte(data1) + " (" +
+                  std::to_string(data1) + ")"};
     }
   }
 
-  if (msgType == 0xB0) { // Control Change (Faders, Knobs, Encoders, Kill Switches)
+  if (msgType == 0xB0) { // Control Change (Faders, Knobs, Jog Wheels)
     switch (data1) {
-    case 0x00: return {"FADER",  "Deck A Volume Slider", true};
-    case 0x01: return {"FADER",  "Crossfader Principal", true};
-    case 0x02: return {"KNOB",   "Deck A EQ High", true};
-    case 0x03: return {"KNOB",   "Deck A EQ Mid", true};
-    case 0x04: return {"KNOB",   "Deck A EQ Low", true};
-    case 0x05: return {"KNOB",   "Deck B EQ High", true};
-    case 0x06: return {"KNOB",   "Deck B EQ Mid", true};
-    case 0x07: return {"KNOB",   "Deck B EQ Low", true};
-    case 0x08: return {"FADER",  "Deck B Volume Slider", true};
-    case 0x09: return {"KNOB",   "Master Level Knob", true};
-    case 0x0A: return {"FADER",  "Deck A Pitch Slider", true};
-    case 0x0B: return {"FADER",  "Deck B Pitch Slider", true};
-    case 0x0C: return {"KNOB",   "Phones Level Knob", true};
-    case 0x0D: return {"KNOB",   "Phones Mix (Cue/Master)", true};
-    case 0x0E: return {"KNOB",   "Mic / External Input Level", true};
-    case 0x0F: return {"KNOB",   "Deck A Gain Knob", true};
-    case 0x10: return {"KNOB",   "Deck B Gain Knob", true};
-    case 0x11: return {"KNOB",   "FX Parameter 1 Knob", true};
-    case 0x12: return {"KNOB",   "FX Parameter 2 Knob", true};
-    case 0x13: return {"JOG",    "Deck A Jog Wheel Rotary", false};
-    case 0x14: return {"JOG",    "Deck B Jog Wheel Rotary", false};
-    case 0x15: return {"BUTTON", "Deck A Kill Switch Low", false};
-    case 0x16: return {"BUTTON", "Deck A Kill Switch Mid", false};
-    case 0x17: return {"BUTTON", "Deck A Kill Switch High", false};
-    case 0x18: return {"BUTTON", "Deck B Kill Switch Low", false};
-    case 0x19: return {"BUTTON", "Deck B Kill Switch Mid", false};
-    case 0x1A: return {"BUTTON", "Deck B Kill Switch High", false};
-    case 0x1B: return {"FADER",  "Deck A Volume (Mixxx map)", true};
-    case 0x1C: return {"BUTTON", "FX Section Button 1", false};
-    case 0x1D: return {"BUTTON", "FX Section Button 2", false};
-    case 0x1E: return {"BUTTON", "FX Section Button 3", false};
-    case 0x1F: return {"BUTTON", "FX Section Button 4", false};
+    case 0x00: return {"FADER", "CC 0x00 (Deck A Volume / Control)"};
+    case 0x01: return {"FADER", "CC 0x01 (Crossfader / Control)"};
+    case 0x02: return {"KNOB",  "CC 0x02 (Deck A EQ High)"};
+    case 0x03: return {"KNOB",  "CC 0x03 (Deck A EQ Mid)"};
+    case 0x04: return {"KNOB",  "CC 0x04 (Deck A EQ Low)"};
+    case 0x05: return {"KNOB",  "CC 0x05 (Deck A Gain)"};
+    case 0x06: return {"KNOB",  "CC 0x06 (Deck B EQ High)"};
+    case 0x07: return {"KNOB",  "CC 0x07 (Deck B EQ Mid)"};
+    case 0x08: return {"KNOB",  "CC 0x08 (Deck B EQ Low)"};
+    case 0x09: return {"KNOB",  "CC 0x09 (Deck B Gain)"};
+    case 0x0A: return {"FADER", "CC 0x0A (Deck A Volume Slider)"};
+    case 0x0B: return {"FADER", "CC 0x0B (Deck B Volume Slider)"};
+    case 0x0C: return {"FADER", "CC 0x0C (Crossfader / Phones)"};
+    case 0x0D: return {"FADER", "CC 0x0D (Deck A Pitch / Phones Mix)"};
+    case 0x0E: return {"FADER", "CC 0x0E (Deck B Pitch / Master)"};
+    case 0x0F: return {"KNOB",  "CC 0x0F (FX Knob 1)"};
+    case 0x10: return {"KNOB",  "CC 0x10 (FX Knob 2)"};
+    case 0x11: return {"KNOB",  "CC 0x11 (FX Knob 3)"};
+    case 0x12: return {"KNOB",  "CC 0x12 (FX Knob 4)"};
+    case 0x13: return {"JOG",   "CC 0x13 (Deck A Jog Wheel)"};
+    case 0x14: return {"JOG",   "CC 0x14 (Deck B Jog Wheel)"};
     default:
-      return {"KNOB", "Control Change CC# " + std::to_string(data1) + " (0x" + HexByte(data1) + ")", true};
+      return {"FADER",
+              "Control Change CC 0x" + HexByte(data1) + " (#" +
+                  std::to_string(data1) + ")"};
     }
   }
 
   if (msgType == 0xE0) { // Pitch Bend
     std::string deck = (channel == 1 ? "Deck A " : "Deck B ");
-    return {"PITCH", deck + "High-Res Pitch Bend", true};
+    return {"PITCH", deck + "High-Res Pitch Bend"};
   }
 
-  return {"MIDI", "Evento MIDI 0x" + HexByte(status), false};
+  return {"MIDI", "Evento MIDI 0x" + HexByte(status)};
 }
 
 // ============================================================================
-// Asynchronous Endpoint 0x81 (IN) Reader Thread
+// Stateful MIDI Stream Decoder & Endpoint 0x81 Reader Thread
 // ============================================================================
+
+void EmitDecodedMidiMessage(WINUSB_INTERFACE_HANDLE hWinUsbMidi, UCHAR outPipeId,
+                            uint8_t status, uint8_t d1, uint8_t d2,
+                            const std::string &rawPacketStr) {
+  uint8_t msgType = status & 0xF0;
+  uint8_t channel = (status & 0x0F) + 1;
+
+  DecodedControlEvent ev;
+  ev.status = status;
+  ev.channel = channel;
+  ev.data1 = d1;
+  ev.data2 = d2;
+  ev.rawHex = rawPacketStr;
+
+  ControlMapping mapping = LookupControl(status, channel, d1);
+  ev.controlType = mapping.type;
+  ev.controlName = mapping.name;
+
+  uint16_t stateKey = (static_cast<uint16_t>(status) << 8) | d1;
+  g_ControlValues[stateKey] = d2;
+
+  if (msgType == 0xB0) {
+    // Every Control Change (Fader, Knob, Jog) displays a live % progress bar!
+    std::string barStr =
+        FormatProgressBar(d2) + " [Val: " + std::to_string(d2) + "/127]";
+    if (mapping.type == "JOG") {
+      int delta = static_cast<int>(d2) - 64;
+      barStr += " (" + std::string(delta >= 0 ? "+" : "") +
+                std::to_string(delta) + ")";
+    }
+    ev.detailValue = barStr;
+  } else if (msgType == 0x90 || msgType == 0x80) {
+    // Physical Button Note On / Note Off
+    bool isPressed = (msgType == 0x90 && d2 > 0);
+    ev.detailValue = isPressed ? "PRESIONADO (Down)" : "LIBERADO (Up)";
+
+    if (isPressed) {
+      uint16_t ledKey = (0x90 << 8) | d1;
+      bool newLed = !g_LedStates[ledKey];
+      g_LedStates[ledKey] = newLed;
+      ev.ledToggled = true;
+      ev.newLedState = newLed;
+
+      uint8_t ledVel = newLed ? 0x7F : 0x00;
+      // Send 64-byte LED update on Note 0x90 (and CC 0xB0 if mapped to kill/FX range)
+      SendBcdSingleMidi(hWinUsbMidi, outPipeId, 0x90, d1, ledVel);
+      if (d1 >= 0x0A && d1 <= 0x20) {
+        SendBcdSingleMidi(hWinUsbMidi, outPipeId, 0xB0, d1, ledVel);
+      }
+    }
+  } else if (msgType == 0xE0) {
+    int pitchVal = (static_cast<int>(d2) << 7) | static_cast<int>(d1);
+    int normalized = pitchVal - 8192;
+    ev.detailValue = FormatBipolarBar(normalized, 8192) + " [Raw: " +
+                     std::to_string(pitchVal) + "]";
+  } else {
+    ev.detailValue =
+        "Data1: " + std::to_string(d1) + ", Data2: " + std::to_string(d2);
+  }
+
+  g_TotalEventsDecoded.fetch_add(1);
+
+  std::lock_guard<std::mutex> lock(g_EventMutex);
+  g_EventQueue.push(ev);
+}
 
 void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsbMidi, UCHAR inPipeId,
                             UCHAR outPipeId) {
@@ -406,6 +462,12 @@ void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsbMidi, UCHAR inPipeId,
 
   uint8_t buffer[64];
 
+  // Persistent MIDI Running Status State Machine across USB packets
+  uint8_t runningStatus = 0;
+  int expectedDataBytes = 0;
+  int collectedDataBytes = 0;
+  uint8_t pendingD1 = 0;
+
   while (g_Running.load()) {
     ULONG bytesRead = 0;
     BOOL ok = WinUsb_ReadPipe(hWinUsbMidi, inPipeId, buffer, sizeof(buffer),
@@ -414,176 +476,79 @@ void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsbMidi, UCHAR inPipeId,
     if (ok && bytesRead > 0) {
       g_TotalPacketsReceived.fetch_add(1);
 
-      // Build raw hex representation
-      std::ostringstream rawOss;
-      for (ULONG b = 0; b < bytesRead && b < 12; ++b) {
-        rawOss << HexByte(buffer[b]) << " ";
+      // Linux snd-bcd2000 protocol (bcd2000_input_complete):
+      // buffer[0] is the exact number of valid MIDI bytes in this packet (1..63).
+      // Bytes after buffer[payloadLen] are uninitialized 8051 RAM garbage and MUST be ignored.
+      uint8_t payloadLen = buffer[0];
+      if (payloadLen == 0 || payloadLen > 63 ||
+          static_cast<ULONG>(payloadLen) >= bytesRead) {
+        continue;
       }
-      if (bytesRead > 12) rawOss << "...";
+
+      // Format ONLY the valid MIDI payload bytes for diagnostic clarity
+      std::ostringstream rawOss;
+      rawOss << "Len=" << static_cast<int>(payloadLen) << ": ";
+      for (uint8_t i = 1; i <= payloadLen; ++i) {
+        rawOss << HexByte(buffer[i]);
+        if (i < payloadLen) rawOss << " ";
+      }
       std::string rawPacketStr = rawOss.str();
 
-      // Framing determination:
-      // Linux snd-bcd2000: buffer[0] is length, buffer[1..] are MIDI bytes
-      ULONG midiStart = 0;
-      ULONG midiLen = 0;
+      // Feed each valid byte into the stateful MIDI Running Status parser
+      for (uint8_t i = 1; i <= payloadLen; ++i) {
+        uint8_t b = buffer[i];
 
-      if (buffer[0] <= 63 && buffer[0] > 0 && bytesRead > 1 && (buffer[1] & 0x80) != 0) {
-        midiStart = 1;
-        midiLen = std::min<ULONG>(static_cast<ULONG>(buffer[0]), bytesRead - 1);
-      } else if (bytesRead >= 3 && buffer[0] == 0x03 && buffer[1] == 0x00 && (buffer[2] & 0x80) != 0) {
-        midiStart = 2;
-        midiLen = bytesRead - 2;
-      } else if ((buffer[0] & 0x80) != 0) {
-        midiStart = 0;
-        midiLen = bytesRead;
-      } else {
-        // Search for any byte with bit 7 set
-        for (ULONG k = 0; k < bytesRead; ++k) {
-          if ((buffer[k] & 0x80) != 0) {
-            midiStart = k;
-            midiLen = bytesRead - k;
-            break;
+        if ((b & 0x80) != 0) {
+          // Status byte received
+          if (b >= 0xF8) {
+            // System Real-Time (does not affect Running Status)
+            continue;
           }
-        }
-      }
-
-      bool anyEventDecoded = false;
-
-      if (midiLen >= 2) {
-        ULONG idx = midiStart;
-        while (idx < midiStart + midiLen) {
-          uint8_t status = buffer[idx];
-          if ((status & 0x80) == 0) {
-            idx++;
+          if (b >= 0xF0) {
+            // System Common / SysEx resets Running Status
+            runningStatus = 0;
+            expectedDataBytes = 0;
+            collectedDataBytes = 0;
             continue;
           }
 
-          uint8_t msgType = status & 0xF0;
-          uint8_t channel = (status & 0x0F) + 1;
-          bool is3Byte = (msgType == 0x80 || msgType == 0x90 || msgType == 0xA0 ||
-                          msgType == 0xB0 || msgType == 0xE0);
+          // Channel Voice Status Byte (0x80..0xEF)
+          runningStatus = b;
+          collectedDataBytes = 0;
+          uint8_t msgType = b & 0xF0;
+          expectedDataBytes = (msgType == 0xC0 || msgType == 0xD0) ? 1 : 2;
+        } else {
+          // Data byte received (0x00..0x7F)
+          if (runningStatus == 0 || expectedDataBytes == 0) {
+            continue;
+          }
 
-          if (is3Byte) {
-            if (idx + 2 < midiStart + midiLen) {
-              uint8_t d1 = buffer[idx + 1];
-              uint8_t d2 = buffer[idx + 2];
-              anyEventDecoded = true;
-
-              DecodedControlEvent ev;
-              ev.timestamp = std::chrono::system_clock::now();
-              ev.status = status;
-              ev.channel = channel;
-              ev.data1 = d1;
-              ev.data2 = d2;
-              ev.rawHex = rawPacketStr;
-
-              ControlMapping mapping = LookupControl(status, channel, d1);
-              ev.controlType = mapping.type;
-              ev.controlName = mapping.name;
-
-              uint16_t stateKey = (static_cast<uint16_t>(status) << 8) | d1;
-              g_ControlValues[stateKey] = d2;
-
-              // Continuous controller (FADER or KNOB): ALWAYS show percentage progress bar!
-              if (msgType == 0xB0) {
-                if (mapping.type == "JOG") {
-                  int delta = (d2 & 0x40) ? -(d2 & 0x3F) : (d2 & 0x3F);
-                  ev.detailValue = (delta >= 0 ? "+" : "") + std::to_string(delta) +
-                                   " ticks (" + (delta > 0 ? "CW" : "CCW") + ")";
-                } else if (mapping.type == "BUTTON") {
-                  bool isPressed = (d2 >= 0x40);
-                  ev.detailValue = isPressed ? "PRESIONADO (Down)" : "LIBERADO (Up)";
-                  if (isPressed) {
-                    bool newLed = !g_LedStates[stateKey];
-                    g_LedStates[stateKey] = newLed;
-                    ev.ledToggled = true;
-                    ev.newLedState = newLed;
-                    SendBcdSingleMidi(hWinUsbMidi, outPipeId, status, d1, newLed ? 0x7F : 0x00);
-                  }
-                } else {
-                  // Continuous CC (Fader, Knob, EQ, Gain, etc.)
-                  ev.detailValue = FormatProgressBar(d2) + " [Val: " + std::to_string(d2) + "/127]";
-                }
-              } else if (msgType == 0x90 || msgType == 0x80) { // Button Note
-                bool isPressed = (msgType == 0x90 && d2 > 0);
-                ev.detailValue = isPressed ? "PRESIONADO (Down)" : "LIBERADO (Up)";
-                if (isPressed) {
-                  bool newLed = !g_LedStates[stateKey];
-                  g_LedStates[stateKey] = newLed;
-                  ev.ledToggled = true;
-                  ev.newLedState = newLed;
-                  SendBcdSingleMidi(hWinUsbMidi, outPipeId, 0x90, d1, newLed ? 0x7F : 0x00);
-                }
-              } else if (msgType == 0xE0) { // Pitch Bend
-                int pitchVal = (static_cast<int>(d2) << 7) | static_cast<int>(d1);
-                int normalized = pitchVal - 8192;
-                ev.detailValue = FormatBipolarBar(normalized, 8192) + " [Raw: " + std::to_string(pitchVal) + "]";
-              } else {
-                ev.detailValue = "Data1: " + std::to_string(d1) + ", Data2: " + std::to_string(d2);
-              }
-
-              g_TotalEventsDecoded.fetch_add(1);
-
-              {
-                std::lock_guard<std::mutex> lock(g_EventMutex);
-                g_EventQueue.push(ev);
-              }
-              idx += 3;
-              continue;
-            }
+          if (expectedDataBytes == 1) {
+            EmitDecodedMidiMessage(hWinUsbMidi, outPipeId, runningStatus, b, 0,
+                                   rawPacketStr);
+            collectedDataBytes = 0; // Keep runningStatus active!
           } else {
-            if (idx + 1 < midiStart + midiLen) {
-              uint8_t d1 = buffer[idx + 1];
-              anyEventDecoded = true;
-
-              DecodedControlEvent ev;
-              ev.timestamp = std::chrono::system_clock::now();
-              ev.status = status;
-              ev.channel = channel;
-              ev.data1 = d1;
-              ev.data2 = 0;
-              ev.rawHex = rawPacketStr;
-              ev.controlType = "MIDI";
-              ev.controlName = "MIDI Ch" + std::to_string(channel) + " Status 0x" + HexByte(status);
-              ev.detailValue = "Data: " + std::to_string(d1);
-
-              g_TotalEventsDecoded.fetch_add(1);
-
-              {
-                std::lock_guard<std::mutex> lock(g_EventMutex);
-                g_EventQueue.push(ev);
-              }
-              idx += 2;
-              continue;
+            if (collectedDataBytes == 0) {
+              pendingD1 = b;
+              collectedDataBytes = 1;
+            } else {
+              uint8_t d1 = pendingD1;
+              uint8_t d2 = b;
+              collectedDataBytes = 0; // Keep runningStatus active for Running Status!
+              EmitDecodedMidiMessage(hWinUsbMidi, outPipeId, runningStatus, d1,
+                                     d2, rawPacketStr);
             }
           }
-          idx++;
         }
-      }
-
-      // If bytes were received but couldn't be parsed into standard MIDI, display raw hex
-      if (!anyEventDecoded && bytesRead > 0) {
-        std::ostringstream oss;
-        oss << "Bytes (" << bytesRead << "): ";
-        for (ULONG b = 0; b < bytesRead && b < 16; ++b) {
-          oss << HexByte(buffer[b]) << " ";
-        }
-        DecodedControlEvent rawEv;
-        rawEv.timestamp = std::chrono::system_clock::now();
-        rawEv.controlType = "RAW_USB";
-        rawEv.controlName = "Trama USB EP 0x" + HexByte(inPipeId);
-        rawEv.detailValue = oss.str();
-        rawEv.rawHex = rawPacketStr;
-
-        std::lock_guard<std::mutex> lock(g_EventMutex);
-        g_EventQueue.push(rawEv);
       }
     } else {
       DWORD err = GetLastError();
       if (err != ERROR_SEM_TIMEOUT) {
-        if (err == ERROR_DEVICE_NOT_CONNECTED || err == ERROR_GEN_FAILURE || err == ERROR_DEV_NOT_EXIST) {
-          std::cerr << "\n[!] Comunicacion USB perdida en EP 0x" << std::hex << (int)inPipeId
-                    << ": " << FormatWin32Error(err) << "\n";
+        if (err == ERROR_DEVICE_NOT_CONNECTED || err == ERROR_GEN_FAILURE ||
+            err == ERROR_DEV_NOT_EXIST) {
+          std::cerr << "\n[!] Comunicacion USB perdida en EP 0x" << std::hex
+                    << static_cast<int>(inPipeId) << std::dec << ": "
+                    << FormatWin32Error(err) << "\n";
           g_Running.store(false);
           break;
         }
@@ -606,7 +571,7 @@ BOOL WINAPI ConsoleCtrlHandler(DWORD signal) {
 }
 
 // ============================================================================
-// Robust SetupAPI & WinUSB Multi-Interface Initializer
+// SetupAPI & WinUSB Multi-Interface Initializer
 // ============================================================================
 
 bool InitializeBcdDevice(BcdUsbContext &ctx) {
@@ -635,16 +600,20 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
              &ifData);
          ++idx) {
       DWORD reqSize = 0;
-      SetupDiGetDeviceInterfaceDetailW(hIntfInfo, &ifData, nullptr, 0, &reqSize, nullptr);
+      SetupDiGetDeviceInterfaceDetailW(hIntfInfo, &ifData, nullptr, 0, &reqSize,
+                                       nullptr);
       if (reqSize == 0) continue;
 
       std::vector<BYTE> buf(reqSize);
-      auto detailData = reinterpret_cast<PSP_DEVICE_INTERFACE_DETAIL_DATA_W>(buf.data());
+      auto detailData =
+          reinterpret_cast<PSP_DEVICE_INTERFACE_DETAIL_DATA_W>(buf.data());
       detailData->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
 
-      if (SetupDiGetDeviceInterfaceDetailW(hIntfInfo, &ifData, detailData, reqSize, nullptr, nullptr)) {
+      if (SetupDiGetDeviceInterfaceDetailW(hIntfInfo, &ifData, detailData,
+                                           reqSize, nullptr, nullptr)) {
         std::wstring path(detailData->DevicePath);
-        if (ContainsInsensitive(path, vidStr) && ContainsInsensitive(path, pidStr)) {
+        if (ContainsInsensitive(path, vidStr) &&
+            ContainsInsensitive(path, pidStr)) {
           targetPath = path;
           break;
         }
@@ -662,25 +631,26 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
 
   std::cout << "  [+] Interfaz detectada: " << WideToUtf8(targetPath) << "\n";
 
-  ctx.hDevice = CreateFileW(targetPath.c_str(), GENERIC_READ | GENERIC_WRITE,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+  ctx.hDevice =
+      CreateFileW(targetPath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
 
   if (ctx.hDevice == INVALID_HANDLE_VALUE) {
-    std::cerr << "  [-] CreateFileW fallo: " << FormatWin32Error(GetLastError()) << "\n";
+    std::cerr << "  [-] CreateFileW fallo: " << FormatWin32Error(GetLastError())
+              << "\n";
     return false;
   }
 
-  // 1. Initialize Interface 0
   if (!WinUsb_Initialize(ctx.hDevice, &ctx.hInterface0)) {
-    std::cerr << "  [-] WinUsb_Initialize fallo: " << FormatWin32Error(GetLastError()) << "\n";
+    std::cerr << "  [-] WinUsb_Initialize fallo: "
+              << FormatWin32Error(GetLastError()) << "\n";
     CloseHandle(ctx.hDevice);
     ctx.hDevice = INVALID_HANDLE_VALUE;
     return false;
   }
   ctx.allInterfaces.push_back(ctx.hInterface0);
 
-  // 2. Discover Associated Interfaces (Interface 1, Interface 2, etc.)
   std::vector<WINUSB_INTERFACE_HANDLE> interfaceHandles;
   interfaceHandles.push_back(ctx.hInterface0);
 
@@ -697,18 +667,16 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
   std::cout << "======================================================================\n";
   std::cout << "  Total interfaces WinUSB disponibles: " << interfaceHandles.size() << "\n\n";
 
-  // 3. Scan all pipes on each interface
   for (size_t intfIdx = 0; intfIdx < interfaceHandles.size(); ++intfIdx) {
     auto hIntf = interfaceHandles[intfIdx];
     USB_INTERFACE_DESCRIPTOR ifDesc{};
     if (!WinUsb_QueryInterfaceSettings(hIntf, 0, &ifDesc)) {
-      std::cerr << "  [-] No se pudo consultar configuración de interfaz #" << intfIdx << "\n";
       continue;
     }
 
     std::cout << "  [+] Interfaz WinUSB #" << intfIdx
-              << " (bInterfaceNumber: " << (int)ifDesc.bInterfaceNumber
-              << ", Endpoints: " << (int)ifDesc.bNumEndpoints << "):\n";
+              << " (bInterfaceNumber: " << static_cast<int>(ifDesc.bInterfaceNumber)
+              << ", Endpoints: " << static_cast<int>(ifDesc.bNumEndpoints) << "):\n";
 
     for (UCHAR p = 0; p < ifDesc.bNumEndpoints; ++p) {
       WINUSB_PIPE_INFORMATION pi{};
@@ -722,12 +690,11 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
         case UsbdPipeTypeInterrupt: typeStr = "Interrupt"; break;
         }
 
-        std::cout << "      Pipe 0x" << std::hex << std::setw(2) << std::setfill('0')
-                  << (int)pi.PipeId << std::dec << " [" << (isInput ? "IN " : "OUT")
-                  << " | " << typeStr << " | " << pi.MaximumPacketSize << " bytes | Interval: "
-                  << (int)pi.Interval << "]\n";
+        std::cout << "      Pipe 0x" << HexByte(pi.PipeId) << " ["
+                  << (isInput ? "IN " : "OUT") << " | " << typeStr << " | "
+                  << pi.MaximumPacketSize << " bytes | Interval: "
+                  << static_cast<int>(pi.Interval) << "]\n";
 
-        // Route MIDI Control pipes (prioritize 0x01 and 0x81, or Interrupt pipes)
         if (pi.PipeId == 0x01) {
           ctx.hMidiInterface = hIntf;
           ctx.midiOutPipe = 0x01;
@@ -743,7 +710,6 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
           }
         }
 
-        // Route Audio pipes (prioritize 0x02 and 0x83, or Isochronous pipes)
         if (pi.PipeId == 0x02) {
           ctx.hAudioInterface = hIntf;
           ctx.audioOutPipe = 0x02;
@@ -755,7 +721,9 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
     }
   }
 
-  // Fallbacks if not uniquely mapped
+  // Always ensure fill character is space on std::cout
+  std::cout << std::dec << std::setfill(' ');
+
   if (!ctx.hMidiInterface) ctx.hMidiInterface = ctx.hInterface0;
   if (!ctx.hAudioInterface) ctx.hAudioInterface = ctx.hInterface0;
 
@@ -769,51 +737,44 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
 
   std::cout << "\n  [ENRUTAMIENTO WINUSB]\n"
             << "    * MIDI / Control OUT : Interfaz #" << midiIntfNum
-            << " -> Pipe 0x" << std::hex << (int)ctx.midiOutPipe << std::dec << "\n"
+            << " -> Pipe 0x" << HexByte(ctx.midiOutPipe) << "\n"
             << "    * Telemetria IN      : Interfaz #" << midiIntfNum
-            << " -> Pipe 0x" << std::hex << (int)ctx.midiInPipe << std::dec << "\n"
-            << "    * Audio Iso OUT      : Pipe 0x" << std::hex << (int)ctx.audioOutPipe << std::dec << "\n"
-            << "    * Audio Iso IN       : Pipe 0x" << std::hex << (int)ctx.audioInPipe << std::dec << "\n";
+            << " -> Pipe 0x" << HexByte(ctx.midiInPipe) << "\n"
+            << "    * Audio Iso OUT      : Pipe 0x" << HexByte(ctx.audioOutPipe) << "\n"
+            << "    * Audio Iso IN       : Pipe 0x" << HexByte(ctx.audioInPipe) << "\n";
   std::cout << "======================================================================\n\n";
 
-  // Configure Policies on MIDI Pipes
   ULONG timeoutMs = 2000;
-  WinUsb_SetPipePolicy(ctx.hMidiInterface, ctx.midiOutPipe, PIPE_TRANSFER_TIMEOUT, sizeof(timeoutMs), &timeoutMs);
+  WinUsb_SetPipePolicy(ctx.hMidiInterface, ctx.midiOutPipe,
+                       PIPE_TRANSFER_TIMEOUT, sizeof(timeoutMs), &timeoutMs);
   UCHAR autoClearStall = 1;
-  WinUsb_SetPipePolicy(ctx.hMidiInterface, ctx.midiOutPipe, AUTO_CLEAR_STALL, sizeof(autoClearStall), &autoClearStall);
+  WinUsb_SetPipePolicy(ctx.hMidiInterface, ctx.midiOutPipe, AUTO_CLEAR_STALL,
+                       sizeof(autoClearStall), &autoClearStall);
 
-  WinUsb_SetPipePolicy(ctx.hMidiInterface, ctx.midiInPipe, PIPE_TRANSFER_TIMEOUT, sizeof(timeoutMs), &timeoutMs);
-  WinUsb_SetPipePolicy(ctx.hMidiInterface, ctx.midiInPipe, AUTO_CLEAR_STALL, sizeof(autoClearStall), &autoClearStall);
+  WinUsb_SetPipePolicy(ctx.hMidiInterface, ctx.midiInPipe,
+                       PIPE_TRANSFER_TIMEOUT, sizeof(timeoutMs), &timeoutMs);
+  WinUsb_SetPipePolicy(ctx.hMidiInterface, ctx.midiInPipe, AUTO_CLEAR_STALL,
+                       sizeof(autoClearStall), &autoClearStall);
 
-  // 4. Transmit 52-byte handshake sequence to the correct MIDI OUT interface handle
-  std::cout << "[HANDSHAKE] Transmitiendo trama de inicializacion de 52 bytes al microcontrolador 8051...\n";
+  std::cout << "[HANDSHAKE] Transmitiendo trama de inicializacion completa de 52 bytes al microcontrolador 8051...\n";
   ULONG bytesWritten = 0;
-  BOOL ok = WinUsb_WritePipe(
-      ctx.hMidiInterface, ctx.midiOutPipe, const_cast<PUCHAR>(BCD2000_INIT_SEQUENCE),
-      sizeof(BCD2000_INIT_SEQUENCE), &bytesWritten, nullptr);
+  BOOL ok = WinUsb_WritePipe(ctx.hMidiInterface, ctx.midiOutPipe,
+                             const_cast<PUCHAR>(BCD2000_INIT_SEQUENCE),
+                             sizeof(BCD2000_INIT_SEQUENCE), &bytesWritten,
+                             nullptr);
 
   if (!ok || bytesWritten != sizeof(BCD2000_INIT_SEQUENCE)) {
     DWORD writeErr = GetLastError();
-    std::cerr << "  [-] Error en handshake en Pipe 0x" << std::hex << (int)ctx.midiOutPipe
-              << ": " << FormatWin32Error(writeErr) << "\n";
-
-    // If failed on MIDI interface, attempt fallback on Interface 0
-    if (ctx.hMidiInterface != ctx.hInterface0) {
-      std::cout << "  [?] Reintentando handshake en Interfaz #0...\n";
-      ok = WinUsb_WritePipe(ctx.hInterface0, ctx.midiOutPipe, const_cast<PUCHAR>(BCD2000_INIT_SEQUENCE),
-                            sizeof(BCD2000_INIT_SEQUENCE), &bytesWritten, nullptr);
-      if (ok && bytesWritten == sizeof(BCD2000_INIT_SEQUENCE)) {
-        std::cout << "  [+] Handshake exitoso en Interfaz #0!\n";
-        ctx.hMidiInterface = ctx.hInterface0;
-      } else {
-        std::cerr << "  [-] Reintento en Interfaz #0 tambien fallo: " << FormatWin32Error(GetLastError()) << "\n";
-      }
-    }
-  } else {
-    std::cout << "  [+] Handshake exitoso (" << bytesWritten << " bytes transmitidos). Microcontrolador activo.\n\n";
+    std::cerr << "  [-] Error en handshake en Pipe 0x"
+              << HexByte(ctx.midiOutPipe) << ": " << FormatWin32Error(writeErr)
+              << "\n";
+    return false;
   }
 
-  Sleep(150); // Allow MCU to settle
+  std::cout << "  [+] Handshake exitoso (" << bytesWritten
+            << " bytes transmitidos). Microcontrolador 8051 activo.\n\n";
+
+  Sleep(150);
   return true;
 }
 
@@ -836,54 +797,50 @@ int main() {
   }
 
   // --------------------------------------------------------------------------
-  // Visual LED Greeting Sweep
+  // Visual LED Greeting Sweep (Identical 64-byte protocol as Milestone 1)
   // --------------------------------------------------------------------------
   std::cout << "======================================================================\n";
   std::cout << "       VERIFICACION FISICA DE RETORNO A LEDS (SALUDO VISUAL)          \n";
   std::cout << "======================================================================\n";
-  std::cout << "  Modo de transmision inicial: " << GetModeName(g_LedSendMode.load()) << "\n";
-  std::cout << "  [Fase 1] Encendiendo LEDs principales...\n";
+  std::cout << "  Formato de trama: [0x03, 0x00, len, MIDI_BYTES..., pad 64 bytes]\n";
+  std::cout << "  [Fase 1] Encendiendo todos los LEDs fisicos de la BCD2000...\n";
 
-  SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true, g_LedSendMode.load());
-  std::cout << "  [+] Comandos LED ON transmitidos (" << g_TotalLedCommandsSent.load() << " paquetes a EP 0x"
-            << std::hex << (int)ctx.midiOutPipe << std::dec << ").\n";
-  std::cout << "  >>> INSPECCIONA TU CONSOLA BCD2000 FISICA AHORA: <<<\n";
+  SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true);
+  std::cout << "  [+] Comandos LED ON transmitidos ("
+            << g_TotalLedCommandsSent.load() << " tramas de 64B a EP 0x"
+            << HexByte(ctx.midiOutPipe) << ").\n";
+  std::cout << "  >>> ¡TODOS LOS LEDS DEBEN ESTAR VISIBLEMENTE ILUMINADOS AHORA! <<<\n";
 
   for (int sec = 3; sec > 0; --sec) {
-    std::cout << "      Manteniendo LEDs encendidos: " << sec << " segundos restantes...\r" << std::flush;
+    std::cout << "      Manteniendo iluminacion activa: " << sec
+              << " segundos restantes...\r" << std::flush;
     Sleep(1000);
   }
-  std::cout << "      Manteniendo LEDs encendidos: listo!                                \n";
+  std::cout << "      Manteniendo iluminacion activa: completado!                      \n";
 
-  std::cout << "  [Fase 2] Apagando LEDs para iniciar monitor en vivo...\n";
-  SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, false, g_LedSendMode.load());
+  std::cout << "  [Fase 2] Apagando LEDs para iniciar monitor interactivo...\n";
+  SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, false);
   std::cout << "  [+] Ciclo de saludo completado.\n\n";
 
   std::cout << "======================================================================\n";
   std::cout << "                 MODO MONITOR EN VIVO Y CONTROL BIDIRECCIONAL         \n";
   std::cout << "======================================================================\n";
   std::cout << "  INSTRUCCIONES:\n";
-  std::cout << "  - Mueve Faders, Knobs o Pitch: se mostrara la BARRA DE % EN VIVO.\n";
-  std::cout << "  - Gira Ruedas Jog: se mostrara el delta de ticks (CW / CCW).\n";
-  std::cout << "  - Presiona cualquier Boton: se decodificara y SU LED CONMUTARA EN LA CONSOLA.\n";
+  std::cout << "  - Mueve Faders, Knobs o Pitch: veras la BARRA DE % EN TIEMPO REAL.\n";
+  std::cout << "  - Gira Ruedas Jog: veras la barra y el desplazamiento relativo.\n";
+  std::cout << "  - Presiona cualquier Boton: su LED fisico CONMUTARA EN LA CONSOLA.\n";
   std::cout << "  --------------------------------------------------------------------\n";
   std::cout << "  COMANDOS DE TECLADO INTERACTIVOS:\n";
-  std::cout << "      [L] : Disparar encendido permanente de TODOS los LEDs.\n";
+  std::cout << "      [L] : Encender TODOS los LEDs permanentemente.\n";
   std::cout << "      [A] : Apagar TODOS los LEDs.\n";
-  std::cout << "      [M] : Alternar ciclicamente el modo de envio a LEDs.\n";
-  std::cout << "      [1] : Forzar Modo A (5 bytes: [0x03, 0x00, status, d1, d2] - Linux).\n";
-  std::cout << "      [2] : Forzar Modo B (3 bytes: [status, d1, d2] - MIDI puro).\n";
-  std::cout << "      [3] : Forzar Modo C (64 bytes: [0x03, 0x00, status, d1, d2, pad 0]).\n";
-  std::cout << "      [4] : Forzar Modo D (6 bytes: [0x03, 0x00, 0x03, status, d1, d2]).\n";
-  std::cout << "      [T] : Mostrar tabla resumen de estado de todos los controles activos.\n";
+  std::cout << "      [T] : Mostrar tabla resumen con el estado actual de cada control.\n";
   std::cout << "      [C] : Limpiar pantalla de consola.\n";
   std::cout << "      [Q] o ESC : Salir ordenadamente del programa.\n";
   std::cout << "----------------------------------------------------------------------\n\n";
 
-  // Launch background worker thread on the correct MIDI interface handle
-  std::thread readerThread(MidiReaderThreadWorker, ctx.hMidiInterface, ctx.midiInPipe, ctx.midiOutPipe);
+  std::thread readerThread(MidiReaderThreadWorker, ctx.hMidiInterface,
+                           ctx.midiInPipe, ctx.midiOutPipe);
 
-  // Main UI & Event Dispatch Loop
   while (g_Running.load()) {
     // 1. Process queued decoded control events
     {
@@ -892,55 +849,35 @@ int main() {
         auto ev = g_EventQueue.front();
         g_EventQueue.pop();
 
-        std::cout << std::left
+        std::cout << std::setfill(' ') << std::left
                   << std::setw(10) << ("[" + ev.controlType + "]")
-                  << std::setw(30) << ev.controlName
-                  << " " << std::setw(28) << ev.detailValue;
+                  << std::setw(35) << ev.controlName << " "
+                  << std::setw(38) << ev.detailValue;
 
         if (ev.ledToggled) {
-          std::cout << " ==> [LED " << (ev.newLedState ? "ENCENDIDO" : "APAGADO") << "]";
+          std::cout << " ==> [LED "
+                    << (ev.newLedState ? "ENCENDIDO" : "APAGADO") << "]";
         }
 
-        std::cout << "  (USB: " << ev.rawHex << ")\n";
+        std::cout << "  (" << ev.rawHex << ")\n";
       }
     }
 
     // 2. Process non-blocking keyboard commands
     if (_kbhit()) {
       int ch = _getch();
-      if (ch == 'q' || ch == 'Q' || ch == 27) { // Q or ESC
+      if (ch == 'q' || ch == 'Q' || ch == 27) {
         std::cout << "\n[INFO] Solicitud de salida recibida. Finalizando...\n";
         g_Running.store(false);
         break;
       } else if (ch == 'l' || ch == 'L') {
-        std::cout << "\n[TEST] Encendiendo TODOS los LEDs (" << GetModeName(g_LedSendMode.load()) << ")...\n";
-        SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true, g_LedSendMode.load());
-        std::cout << "  [+] Comandos LED ON enviados. Permaneceran encendidos hasta que presiones [A].\n\n";
+        std::cout << "\n[TEST] Encendiendo TODOS los LEDs (tramas de 64 bytes)...\n";
+        SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true);
+        std::cout << "  [+] Todos los LEDs encendidos. Presiona [A] para apagarlos.\n\n";
       } else if (ch == 'a' || ch == 'A') {
-        std::cout << "\n[TEST] Apagando TODOS los LEDs (" << GetModeName(g_LedSendMode.load()) << ")...\n";
-        SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, false, g_LedSendMode.load());
-        std::cout << "  [+] Comandos LED OFF enviados.\n\n";
-      } else if (ch == 'm' || ch == 'M') {
-        int nextMode = (g_LedSendMode.load() + 1) % 4;
-        g_LedSendMode.store(nextMode);
-        std::cout << "\n[MODO] Modo de envio de LEDs cambiado a: " << GetModeName(nextMode) << "\n";
-        SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true, nextMode);
-      } else if (ch == '1') {
-        g_LedSendMode.store(0);
-        std::cout << "\n[MODO] Seleccionado Modo 1: " << GetModeName(0) << "\n";
-        SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true, 0);
-      } else if (ch == '2') {
-        g_LedSendMode.store(1);
-        std::cout << "\n[MODO] Seleccionado Modo 2: " << GetModeName(1) << "\n";
-        SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true, 1);
-      } else if (ch == '3') {
-        g_LedSendMode.store(2);
-        std::cout << "\n[MODO] Seleccionado Modo 3: " << GetModeName(2) << "\n";
-        SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true, 2);
-      } else if (ch == '4') {
-        g_LedSendMode.store(3);
-        std::cout << "\n[MODO] Seleccionado Modo 4: " << GetModeName(3) << "\n";
-        SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true, 3);
+        std::cout << "\n[TEST] Apagando TODOS los LEDs (tramas de 64 bytes)...\n";
+        SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, false);
+        std::cout << "  [+] Todos los LEDs apagados.\n\n";
       } else if (ch == 'c' || ch == 'C') {
         system("cls");
         std::cout << "[INFO] Pantalla limpiada. Modo monitor en vivo activo...\n\n";
@@ -948,45 +885,43 @@ int main() {
         std::cout << "\n======================================================================\n";
         std::cout << "                    TABLA RESUMEN DE ESTADO DE CONTROLES              \n";
         std::cout << "======================================================================\n";
-        std::cout << "  Eventos decodificados : " << g_TotalEventsDecoded.load() << "\n";
-        std::cout << "  Tramas USB recibidas   : " << g_TotalPacketsReceived.load() << "\n";
-        std::cout << "  Comandos LED enviados  : " << g_TotalLedCommandsSent.load() << "\n";
-        std::cout << "  Modo de envio LED actual: " << GetModeName(g_LedSendMode.load()) << "\n";
+        std::cout << "  Eventos MIDI decodificados : " << g_TotalEventsDecoded.load() << "\n";
+        std::cout << "  Tramas USB recibidas       : " << g_TotalPacketsReceived.load() << "\n";
+        std::cout << "  Tramas LED 64B enviadas    : " << g_TotalLedCommandsSent.load() << "\n";
         std::cout << "----------------------------------------------------------------------\n";
         for (const auto &kv : g_ControlValues) {
           uint8_t st = static_cast<uint8_t>(kv.first >> 8);
           uint8_t d1 = static_cast<uint8_t>(kv.first & 0xFF);
           uint8_t val = kv.second;
           auto map = LookupControl(st, (st & 0x0F) + 1, d1);
-          std::cout << "  " << std::left << std::setw(32) << map.name << " = "
-                    << std::setw(4) << static_cast<int>(val) << " "
-                    << FormatProgressBar(val, 14) << "\n";
+          std::cout << "  " << std::setfill(' ') << std::left << std::setw(36)
+                    << map.name << " = " << std::setw(4)
+                    << static_cast<int>(val) << " "
+                    << FormatProgressBar(val, 16) << "\n";
         }
         std::cout << "======================================================================\n\n";
       }
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
 
-  // Clean Shutdown
   std::cout << "\n[CLEANUP] Deteniendo hilo de lectura y apagando LEDs...\n";
   if (readerThread.joinable()) {
     readerThread.join();
   }
 
-  // Ensure all LEDs are cleanly turned off before closing
-  SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, false, g_LedSendMode.load());
+  SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, false);
 
-  // Free all interface handles in reverse order
-  for (auto it = ctx.allInterfaces.rbegin(); it != ctx.allInterfaces.rend(); ++it) {
+  for (auto it = ctx.allInterfaces.rbegin(); it != ctx.allInterfaces.rend();
+       ++it) {
     if (*it) WinUsb_Free(*it);
   }
   if (ctx.hDevice != INVALID_HANDLE_VALUE) {
     CloseHandle(ctx.hDevice);
   }
 
-  std::cout << "  [+] Recursos liberados cleanly. Total eventos capturados: "
+  std::cout << "  [+] Recursos liberados. Total eventos MIDI decodificados: "
             << g_TotalEventsDecoded.load() << "\n";
   std::cout << "======================================================================\n";
   std::cout << "             HITO 2: TELEMETRIA Y CONTROL MIDI COMPLETADO             \n";
