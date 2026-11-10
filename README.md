@@ -42,3 +42,4 @@ cmake --build build --config RelWithDebInfo --target bcd2000_diag_usb
 ```powershell
 .\build\RelWithDebInfo\bcd2000_diag_usb.exe
 ```
+

@@ -44,8 +44,20 @@ target_link_libraries(bcd2000_diag_usb
         ole32
 )
 
+# Milestone 2: Physical Control Telemetry & Bi-Directional LED Engine
+add_executable(bcd2000_diag_midi
+    tools/bcd2000_diag_midi.cpp
+)
+
+target_link_libraries(bcd2000_diag_midi
+    PRIVATE
+        winusb
+        setupapi
+        ole32
+)
+
 # Set standard output directories matching verification roadmap
-set_target_properties(bcd2000_diag_usb PROPERTIES
+set_target_properties(bcd2000_diag_usb bcd2000_diag_midi PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
