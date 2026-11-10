@@ -98,21 +98,23 @@ private:
     ASIOTime m_asioTime{};
 
     // Channel double buffers: [channel][doubleBufferIndex (0 or 1)]
-    // Exposed to ASIO hosts as 32-bit signed PCM (ASIOSTInt32LSB) to prevent
-    // host-side 16-bit truncation grit and 0 dBFS float->int16 wrap-around.
-    std::vector<int32_t> m_inputStorage[kNumInputs][2];
-    std::vector<int32_t> m_outputStorage[kNumOutputs][2];
+    // Native 16-bit signed little-endian PCM (ASIOSTInt16LSB) matching the
+    // BCD2000 TUSB3200 / CS4220 hardware DMA format.
+    std::vector<int16_t> m_inputStorage[kNumInputs][2];
+    std::vector<int16_t> m_outputStorage[kNumOutputs][2];
     bool m_inputActive[kNumInputs]{};
     bool m_outputActive[kNumOutputs]{};
 
     // Interleaved 4-channel S16_LE ring buffer for decoupling power-of-2 ASIO
-    // buffers from 44.1-frame/ms (360-byte) USB 1.1 Isochronous packets
-    static constexpr size_t kRingCapacityFrames = 8192; // Power of 2
-    std::vector<int16_t> m_outRingBuffer;               // kRingCapacityFrames * 4 int16_t
+    // buffers from 45-frame (360-byte) USB 1.1 Isochronous URBs
+    static constexpr size_t kRingCapacityFrames = 16384; // Power of 2
+    std::vector<int16_t> m_outRingBuffer;                // kRingCapacityFrames * 4 int16_t
     uint64_t m_ringWriteFrames{0};
     uint64_t m_ringReadFrames{0};
-    uint32_t m_ditherState{0x12345678u};
-    uint32_t m_packetPhase{0};
+
+    // Continuous fractional resampler state for 32000 / 48000 / 88200 / 96000 Hz
+    double m_resamplePhase{0.0};
+    int16_t m_resampleHistory[4][kNumOutputs]{};
 
     // Real-time streaming state
     std::atomic<bool> m_streamingActive{false};
