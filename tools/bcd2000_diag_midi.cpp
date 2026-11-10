@@ -6,10 +6,12 @@
  * Implements the exact USB protocol of the Behringer BCD2000 8051 MCU
  * (verified against Linux kernel sound/usb/bcd2000/bcd2000.c and Mixxx
  *  Behringer BCD2000.midi.xml / Behringer-BCD2000-scripts.js):
- *  - Handshake: Complete 52-byte initialization sequence on Endpoint 0x01 (OUT).
+ *  - Handshake: Complete 52-byte initialization sequence on Endpoint 0x01
+ * (OUT).
  *  - Input (EP 0x81 IN): Byte 0 is payload length (1..63); bytes 1..len are a
  *    stateful MIDI stream using MIDI Running Status.
- *  - Output (EP 0x01 OUT): 64-byte frame [0x03, 0x00, len, midi_bytes..., 0...].
+ *  - Output (EP 0x01 OUT): 64-byte frame [0x03, 0x00, len, midi_bytes...,
+ * 0...].
  *  - Physical LEDs: All 26 hardware LEDs are controlled via MIDI Control Change
  *    on Channel 1 (0xB0, CC 0x00..0x19, value 0x7F=ON / 0x00=OFF).
  */
@@ -50,7 +52,8 @@
 DEFINE_GUID(GUID_DEVINTERFACE_WINUSB_GENERIC, 0xdee824ef, 0x729b, 0x4a0e, 0x9c,
             0x14, 0xb7, 0x11, 0x7d, 0x33, 0xa8, 0x17);
 
-// Complete 52-byte initialization handshake from Linux kernel sound/usb/bcd2000/bcd2000.c
+// Complete 52-byte initialization handshake from Linux kernel
+// sound/usb/bcd2000/bcd2000.c
 static const uint8_t BCD2000_INIT_SEQUENCE[52] = {
     0x07, 0x00, 0x00, 0x00, 0x78, 0x48, 0x1c, 0x81, 0xc4, 0x00, 0x00,
     0x00, 0x5e, 0x53, 0x4a, 0xa7, 0x18, 0xfa, 0x11, 0xff, 0x6c, 0xf3,
@@ -165,7 +168,8 @@ std::string FormatWin32Error(DWORD errorCode) {
 }
 
 /**
- * @brief Formats a 0..127 unipolar percentage progress bar: [========|       ] 53%
+ * @brief Formats a 0..127 unipolar percentage progress bar: [========|       ]
+ * 53%
  */
 std::string FormatProgressBar(uint8_t value, int width = 16) {
   uint8_t clamped = std::min<uint8_t>(value, 127);
@@ -186,7 +190,8 @@ std::string FormatProgressBar(uint8_t value, int width = 16) {
 }
 
 /**
- * @brief Formats a bipolar percentage progress bar (-8192..+8191): [    |====   ] +30%
+ * @brief Formats a bipolar percentage progress bar (-8192..+8191): [    |====
+ * ] +30%
  */
 std::string FormatBipolarBar(int value, int maxRange = 8192, int width = 16) {
   int half = width / 2;
@@ -218,7 +223,8 @@ std::string FormatBipolarBar(int value, int maxRange = 8192, int width = 16) {
  * @brief Sends a formatted 64-byte BCD2000 command frame to Endpoint 0x01.
  *        Caller should hold g_UsbIoMutex or ensure reader is paused.
  *
- * Exact framing from Linux kernel sound/usb/bcd2000/bcd2000.c (bcd2000_midi_send):
+ * Exact framing from Linux kernel sound/usb/bcd2000/bcd2000.c
+ * (bcd2000_midi_send):
  *  - Byte 0: 0x03 (device_cmd_prefix[0])
  *  - Byte 1: 0x00 (device_cmd_prefix[1])
  *  - Byte 2: payloadLen (number of MIDI bytes in this frame, 1..61)
@@ -246,12 +252,13 @@ bool SendBcdMidiFrameLocked(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
     return true;
   }
 
-  // If the 8051 pipe temporarily stalled or aborted due to timing, reset and retry once
+  // If the 8051 pipe temporarily stalled or aborted due to timing, reset and
+  // retry once
   WinUsb_ResetPipe(hWinUsb, outPipeId);
   Sleep(15);
   bytesWritten = 0;
-  ok = WinUsb_WritePipe(hWinUsb, outPipeId, frame, sizeof(frame),
-                        &bytesWritten, nullptr);
+  ok = WinUsb_WritePipe(hWinUsb, outPipeId, frame, sizeof(frame), &bytesWritten,
+                        nullptr);
   if (ok && bytesWritten == sizeof(frame)) {
     g_TotalLedCommandsSent.fetch_add(1);
     return true;
@@ -259,8 +266,8 @@ bool SendBcdMidiFrameLocked(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
 
   DWORD err = GetLastError();
   std::cerr << "  [-] Error en WinUsb_WritePipe (EP 0x" << std::hex
-            << static_cast<int>(outPipeId) << std::dec << "): "
-            << FormatWin32Error(err) << "\n";
+            << static_cast<int>(outPipeId) << std::dec
+            << "): " << FormatWin32Error(err) << "\n";
   return false;
 }
 
@@ -288,7 +295,8 @@ void SetAllLedsState(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
   std::lock_guard<std::mutex> ioLock(g_UsbIoMutex);
   Sleep(10);
 
-  // Behringer BCD2000 has exactly 26 physical LEDs at 0xB0, CC 0x00..0x19 (0..25)
+  // Behringer BCD2000 has exactly 26 physical LEDs at 0xB0, CC 0x00..0x19
+  // (0..25)
   for (uint8_t cc = 0x00; cc <= 0x19; ++cc) {
     SendBcdSingleMidiLocked(hWinUsb, outPipeId, 0xB0, cc, val);
     g_LedStates[cc] = turnOn;
@@ -300,7 +308,8 @@ void SetAllLedsState(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
 
 // ============================================================================
 // BCD2000 Hardware Control & LED Mapping Dictionary
-// (Verified against Mixxx Behringer BCD2000.midi.xml & Behringer-BCD2000-scripts.js)
+// (Verified against Mixxx Behringer BCD2000.midi.xml &
+// Behringer-BCD2000-scripts.js)
 // ============================================================================
 
 /**
@@ -312,9 +321,10 @@ void SetAllLedsState(WINUSB_INTERFACE_HANDLE hWinUsb, UCHAR outPipeId,
  * have their own physical LED.
  */
 bool MapButtonNoteToLedCc(uint8_t inputNote, uint8_t &outLedCc) {
-  // Deck A (0x0C..0x13 -> LEDs 0x18..0x11) & Deck B (0x14..0x1B -> LEDs 0x10..0x09)
-  // On the BCD2000 PCB shift register chain, these 16 illuminated buttons are
-  // wired in exact reverse order: ledCc = 0x24 - inputNote (36 - inputNote).
+  // Deck A (0x0C..0x13 -> LEDs 0x18..0x11) & Deck B (0x14..0x1B -> LEDs
+  // 0x10..0x09) On the BCD2000 PCB shift register chain, these 16 illuminated
+  // buttons are wired in exact reverse order: ledCc = 0x24 - inputNote (36 -
+  // inputNote).
   if (inputNote >= 0x0C && inputNote <= 0x1B) {
     outLedCc = static_cast<uint8_t>(0x24 - inputNote);
     return true;
@@ -343,89 +353,147 @@ struct ControlMapping {
 ControlMapping LookupControl(uint8_t status, uint8_t channel, uint8_t data1) {
   uint8_t msgType = status & 0xF0;
 
-  if (msgType == 0x90 || msgType == 0x80) { // Note On / Note Off (Physical Buttons)
+  if (msgType == 0x90 ||
+      msgType == 0x80) { // Note On / Note Off (Physical Buttons)
     switch (data1) {
     // Momentary Deck A Buttons (0x00..0x05)
-    case 0x00: return {"BUTTON", "Deck A Search << (Back) [0x00]"};
-    case 0x01: return {"BUTTON", "Deck A Search >> (Fwd) [0x01]"};
-    case 0x02: return {"BUTTON", "Deck A Pitch Bend - [0x02]"};
-    case 0x03: return {"BUTTON", "Deck A Pitch Bend + [0x03]"};
-    case 0x04: return {"BUTTON", "Deck A Set Loop (In) [0x04]"};
-    case 0x05: return {"BUTTON", "Deck A Reloop / Exit [0x05]"};
+    case 0x00:
+      return {"BUTTON", "Deck A Search << (Back) [0x00]"};
+    case 0x01:
+      return {"BUTTON", "Deck A Search >> (Fwd) [0x01]"};
+    case 0x02:
+      return {"BUTTON", "Deck A Pitch Bend - [0x02]"};
+    case 0x03:
+      return {"BUTTON", "Deck A Pitch Bend + [0x03]"};
+    case 0x04:
+      return {"BUTTON", "Deck A Set Loop (In) [0x04]"};
+    case 0x05:
+      return {"BUTTON", "Deck A Reloop / Exit [0x05]"};
 
     // Momentary Deck B Buttons (0x06..0x0B)
-    case 0x06: return {"BUTTON", "Deck B Search << (Back) [0x06]"};
-    case 0x07: return {"BUTTON", "Deck B Search >> (Fwd) [0x07]"};
-    case 0x08: return {"BUTTON", "Deck B Pitch Bend - [0x08]"};
-    case 0x09: return {"BUTTON", "Deck B Pitch Bend + [0x09]"};
-    case 0x0A: return {"BUTTON", "Deck B Set Loop (In) [0x0A]"};
-    case 0x0B: return {"BUTTON", "Deck B Reloop / Exit [0x0B]"};
+    case 0x06:
+      return {"BUTTON", "Deck B Search << (Back) [0x06]"};
+    case 0x07:
+      return {"BUTTON", "Deck B Search >> (Fwd) [0x07]"};
+    case 0x08:
+      return {"BUTTON", "Deck B Pitch Bend - [0x08]"};
+    case 0x09:
+      return {"BUTTON", "Deck B Pitch Bend + [0x09]"};
+    case 0x0A:
+      return {"BUTTON", "Deck B Set Loop (In) [0x0A]"};
+    case 0x0B:
+      return {"BUTTON", "Deck B Reloop / Exit [0x0B]"};
 
     // Illuminated Deck A Buttons (0x0C..0x13 -> LEDs 0x18..0x11)
-    case 0x0C: return {"BUTTON", "Deck A Kill Low [0x0C]"};
-    case 0x0D: return {"BUTTON", "Deck A Kill Mid [0x0D]"};
-    case 0x0E: return {"BUTTON", "Deck A Kill High [0x0E]"};
-    case 0x0F: return {"BUTTON", "Deck A Loop Out / Active [0x0F]"};
-    case 0x10: return {"BUTTON", "Deck A Sync [0x10]"};
-    case 0x11: return {"BUTTON", "Deck A Scratch Mode [0x11]"};
-    case 0x12: return {"BUTTON", "Deck A Play / Pause [0x12]"};
-    case 0x13: return {"BUTTON", "Deck A Cue [0x13]"};
+    case 0x0C:
+      return {"BUTTON", "Deck A Kill Low [0x0C]"};
+    case 0x0D:
+      return {"BUTTON", "Deck A Kill Mid [0x0D]"};
+    case 0x0E:
+      return {"BUTTON", "Deck A Kill High [0x0E]"};
+    case 0x0F:
+      return {"BUTTON", "Deck A Loop Out / Active [0x0F]"};
+    case 0x10:
+      return {"BUTTON", "Deck A Sync [0x10]"};
+    case 0x11:
+      return {"BUTTON", "Deck A Scratch Mode [0x11]"};
+    case 0x12:
+      return {"BUTTON", "Deck A Play / Pause [0x12]"};
+    case 0x13:
+      return {"BUTTON", "Deck A Cue [0x13]"};
 
     // Illuminated Deck B Buttons (0x14..0x1B -> LEDs 0x10..0x09)
-    case 0x14: return {"BUTTON", "Deck B Kill Low [0x14]"};
-    case 0x15: return {"BUTTON", "Deck B Kill Mid [0x15]"};
-    case 0x16: return {"BUTTON", "Deck B Kill High [0x16]"};
-    case 0x17: return {"BUTTON", "Deck B Loop Out / Active [0x17]"};
-    case 0x18: return {"BUTTON", "Deck B Sync [0x18]"};
-    case 0x19: return {"BUTTON", "Deck B Scratch Mode [0x19]"};
-    case 0x1A: return {"BUTTON", "Deck B Play / Pause [0x1A]"};
-    case 0x1B: return {"BUTTON", "Deck B Cue [0x1B]"};
+    case 0x14:
+      return {"BUTTON", "Deck B Kill Low [0x14]"};
+    case 0x15:
+      return {"BUTTON", "Deck B Kill Mid [0x15]"};
+    case 0x16:
+      return {"BUTTON", "Deck B Kill High [0x16]"};
+    case 0x17:
+      return {"BUTTON", "Deck B Loop Out / Active [0x17]"};
+    case 0x18:
+      return {"BUTTON", "Deck B Sync [0x18]"};
+    case 0x19:
+      return {"BUTTON", "Deck B Scratch Mode [0x19]"};
+    case 0x1A:
+      return {"BUTTON", "Deck B Play / Pause [0x1A]"};
+    case 0x1B:
+      return {"BUTTON", "Deck B Cue [0x1B]"};
 
-    // Illuminated Mixer / FX / PFL Buttons (0x1C..0x25 -> LEDs 0x19, 0x08..0x00)
-    case 0x1C: return {"BUTTON", "Deck A Analog Input (Ext A) [0x1C]"};
-    case 0x1D: return {"BUTTON", "Deck B Analog Input (Ext B) [0x1D]"};
-    case 0x1E: return {"BUTTON", "FX Button 1 (Control A) [0x1E]"};
-    case 0x1F: return {"BUTTON", "FX Button 2 (Control B) [0x1F]"};
-    case 0x20: return {"BUTTON", "FX Button 3 (FX On A) [0x20]"};
-    case 0x21: return {"BUTTON", "FX Button 4 (FX On B) [0x21]"};
-    case 0x22: return {"BUTTON", "Mic On Air / Talkover [0x22]"};
-    case 0x23: return {"BUTTON", "Phones Cue A (PFL A) [0x23]"};
-    case 0x24: return {"BUTTON", "Phones Cue B (PFL B) [0x24]"};
-    case 0x25: return {"BUTTON", "Phones Split [0x25]"};
+    // Illuminated Mixer / FX / PFL Buttons (0x1C..0x25 -> LEDs 0x19,
+    // 0x08..0x00)
+    case 0x1C:
+      return {"BUTTON", "Deck A Analog Input (Ext A) [0x1C]"};
+    case 0x1D:
+      return {"BUTTON", "Deck B Analog Input (Ext B) [0x1D]"};
+    case 0x1E:
+      return {"BUTTON", "FX Button 1 (Control A) [0x1E]"};
+    case 0x1F:
+      return {"BUTTON", "FX Button 2 (Control B) [0x1F]"};
+    case 0x20:
+      return {"BUTTON", "FX Button 3 (FX On A) [0x20]"};
+    case 0x21:
+      return {"BUTTON", "FX Button 4 (FX On B) [0x21]"};
+    case 0x22:
+      return {"BUTTON", "Mic On Air / Talkover [0x22]"};
+    case 0x23:
+      return {"BUTTON", "Phones Cue A (PFL A) [0x23]"};
+    case 0x24:
+      return {"BUTTON", "Phones Cue B (PFL B) [0x24]"};
+    case 0x25:
+      return {"BUTTON", "Phones Split [0x25]"};
 
     default:
-      return {"BUTTON",
-              "Boton Note 0x" + HexByte(data1) + " (#" +
-                  std::to_string(data1) + ")"};
+      return {"BUTTON", "Boton Note 0x" + HexByte(data1) + " (#" +
+                            std::to_string(data1) + ")"};
     }
   }
 
   if (msgType == 0xB0) { // Control Change (Faders, Knobs, Jog Wheels)
     switch (data1) {
-    case 0x00: return {"FADER", "Deck A Volume Fader [CC 0x00]"};
-    case 0x01: return {"FADER", "Crossfader [CC 0x01]"};
-    case 0x02: return {"FADER", "Deck B Volume Fader [CC 0x02]"};
-    case 0x03: return {"KNOB",  "Deck A EQ Low [CC 0x03]"};
-    case 0x04: return {"KNOB",  "Deck A EQ Mid [CC 0x04]"};
-    case 0x05: return {"KNOB",  "Deck A EQ High [CC 0x05]"};
-    case 0x06: return {"KNOB",  "Deck A Gain [CC 0x06]"};
-    case 0x07: return {"KNOB",  "Deck B EQ Low [CC 0x07]"};
-    case 0x08: return {"KNOB",  "Deck B EQ Mid [CC 0x08]"};
-    case 0x09: return {"KNOB",  "Deck B EQ High [CC 0x09]"};
-    case 0x0A: return {"KNOB",  "Deck B Gain [CC 0x0A]"};
-    case 0x0B: return {"FADER", "Deck A Pitch Fader [CC 0x0B]"};
-    case 0x0C: return {"FADER", "Deck B Pitch Fader [CC 0x0C]"};
-    case 0x0D: return {"KNOB",  "FX Knob A (Param 1) [CC 0x0D]"};
-    case 0x0E: return {"KNOB",  "FX Knob B (Param 2) [CC 0x0E]"};
-    case 0x0F: return {"KNOB",  "FX Knob C (Param 3) [CC 0x0F]"};
-    case 0x10: return {"KNOB",  "Master Volume Knob [CC 0x10]"};
-    case 0x11: return {"KNOB",  "Phones Mix Knob [CC 0x11]"};
-    case 0x12: return {"JOG",   "Deck B Jog Wheel [CC 0x12]"};
-    case 0x13: return {"JOG",   "Deck A Jog Wheel [CC 0x13]"};
+    case 0x00:
+      return {"FADER", "Deck A Volume Fader [CC 0x00]"};
+    case 0x01:
+      return {"FADER", "Crossfader [CC 0x01]"};
+    case 0x02:
+      return {"FADER", "Deck B Volume Fader [CC 0x02]"};
+    case 0x03:
+      return {"KNOB", "Deck A EQ Low [CC 0x03]"};
+    case 0x04:
+      return {"KNOB", "Deck A EQ Mid [CC 0x04]"};
+    case 0x05:
+      return {"KNOB", "Deck A EQ High [CC 0x05]"};
+    case 0x06:
+      return {"KNOB", "Deck A Gain [CC 0x06]"};
+    case 0x07:
+      return {"KNOB", "Deck B EQ Low [CC 0x07]"};
+    case 0x08:
+      return {"KNOB", "Deck B EQ Mid [CC 0x08]"};
+    case 0x09:
+      return {"KNOB", "Deck B EQ High [CC 0x09]"};
+    case 0x0A:
+      return {"KNOB", "Deck B Gain [CC 0x0A]"};
+    case 0x0B:
+      return {"FADER", "Deck A Pitch Fader [CC 0x0B]"};
+    case 0x0C:
+      return {"FADER", "Deck B Pitch Fader [CC 0x0C]"};
+    case 0x0D:
+      return {"KNOB", "FX Knob A (Param 1) [CC 0x0D]"};
+    case 0x0E:
+      return {"KNOB", "FX Knob B (Param 2) [CC 0x0E]"};
+    case 0x0F:
+      return {"KNOB", "FX Knob C (Param 3) [CC 0x0F]"};
+    case 0x10:
+      return {"KNOB", "Master Volume Knob [CC 0x10]"};
+    case 0x11:
+      return {"KNOB", "Phones Mix Knob [CC 0x11]"};
+    case 0x12:
+      return {"JOG", "Deck B Jog Wheel [CC 0x12]"};
+    case 0x13:
+      return {"JOG", "Deck A Jog Wheel [CC 0x13]"};
     default:
-      return {"FADER",
-              "Control Change CC 0x" + HexByte(data1) + " (#" +
-                  std::to_string(data1) + ")"};
+      return {"FADER", "Control Change CC 0x" + HexByte(data1) + " (#" +
+                           std::to_string(data1) + ")"};
     }
   }
 
@@ -496,8 +564,8 @@ void EmitDecodedMidiMessage(uint8_t status, uint8_t d1, uint8_t d2,
   } else if (msgType == 0xE0) {
     int pitchVal = (static_cast<int>(d2) << 7) | static_cast<int>(d1);
     int normalized = pitchVal - 8192;
-    ev.detailValue = FormatBipolarBar(normalized, 8192) + " [Raw: " +
-                     std::to_string(pitchVal) + "]";
+    ev.detailValue = FormatBipolarBar(normalized, 8192) +
+                     " [Raw: " + std::to_string(pitchVal) + "]";
   } else {
     ev.detailValue =
         "Data1: " + std::to_string(d1) + ", Data2: " + std::to_string(d2);
@@ -551,8 +619,9 @@ void MidiReaderThreadWorker(WINUSB_INTERFACE_HANDLE hWinUsbMidi, UCHAR inPipeId,
       g_TotalPacketsReceived.fetch_add(1);
 
       // Linux snd-bcd2000 protocol (bcd2000_input_complete):
-      // buffer[0] is the exact number of valid MIDI bytes in this packet (1..63).
-      // Bytes after buffer[payloadLen] are uninitialized 8051 RAM garbage and MUST be ignored.
+      // buffer[0] is the exact number of valid MIDI bytes in this packet
+      // (1..63). Bytes after buffer[payloadLen] are uninitialized 8051 RAM
+      // garbage and MUST be ignored.
       uint8_t payloadLen = buffer[0];
       if (payloadLen == 0 || payloadLen > 63 ||
           static_cast<ULONG>(payloadLen) >= bytesRead) {
@@ -674,7 +743,8 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
   ctx.hAudioInterface = nullptr;
   ctx.allInterfaces.clear();
 
-  std::cout << "[USB] Escaneando dispositivos USB mediante SetupAPI para VID 1397 / PID 00BD...\n";
+  std::cout << "[USB] Escaneando dispositivos USB mediante SetupAPI para VID "
+               "1397 / PID 00BD...\n";
 
   HDEVINFO hIntfInfo =
       SetupDiGetClassDevsW(&GUID_DEVINTERFACE_WINUSB_GENERIC, nullptr, nullptr,
@@ -717,17 +787,18 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
   }
 
   if (targetPath.empty()) {
-    std::cerr << "  [-] No se encontro la Behringer BCD2000 con driver WinUSB activo.\n";
+    std::cerr << "  [-] No se encontro la Behringer BCD2000 con driver WinUSB "
+                 "activo.\n";
     return false;
   }
 
   std::cout << "  [+] Dispositivo localizado: " << WideToUtf8(targetPath)
             << "\n";
 
-  ctx.hDevice = CreateFileW(
-      targetPath.c_str(), GENERIC_WRITE | GENERIC_READ,
-      FILE_SHARE_WRITE | FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+  ctx.hDevice =
+      CreateFileW(targetPath.c_str(), GENERIC_WRITE | GENERIC_READ,
+                  FILE_SHARE_WRITE | FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
 
   if (ctx.hDevice == INVALID_HANDLE_VALUE) {
     std::cerr << "  [-] Error en CreateFileW: "
@@ -838,12 +909,13 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
   WinUsb_SetPipePolicy(ctx.hMidiInterface, ctx.midiInPipe, AUTO_CLEAR_STALL,
                        sizeof(autoClearStall), &autoClearStall);
 
-  std::cout << "[HANDSHAKE] Transmitiendo trama de inicializacion completa de 52 bytes al microcontrolador 8051...\n";
+  std::cout << "[HANDSHAKE] Transmitiendo trama de inicializacion completa de "
+               "52 bytes al microcontrolador 8051...\n";
   ULONG bytesWritten = 0;
-  BOOL ok = WinUsb_WritePipe(ctx.hMidiInterface, ctx.midiOutPipe,
-                             const_cast<PUCHAR>(BCD2000_INIT_SEQUENCE),
-                             sizeof(BCD2000_INIT_SEQUENCE), &bytesWritten,
-                             nullptr);
+  BOOL ok =
+      WinUsb_WritePipe(ctx.hMidiInterface, ctx.midiOutPipe,
+                       const_cast<PUCHAR>(BCD2000_INIT_SEQUENCE),
+                       sizeof(BCD2000_INIT_SEQUENCE), &bytesWritten, nullptr);
 
   if (!ok || bytesWritten != sizeof(BCD2000_INIT_SEQUENCE)) {
     DWORD writeErr = GetLastError();
@@ -866,7 +938,8 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
                             0x7F);
     Sleep(15);
   }
-  std::cout << "  [+] Aceleracion de Jog Wheels activada (0xB0, 0x63, 0x7F).\n\n";
+  std::cout
+      << "  [+] Aceleracion de Jog Wheels activada (0xB0, 0x63, 0x7F).\n\n";
 
   return true;
 }
@@ -878,10 +951,14 @@ bool InitializeBcdDevice(BcdUsbContext &ctx) {
 int main() {
   SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
-  std::cout << "======================================================================\n";
-  std::cout << "   Behringer BCD2000 Telemetria de Controles y Retorno a LEDs (Hito 2)\n";
-  std::cout << "   Target: VID 0x1397, PID 0x00BD | Driver: WinUSB (x64)             \n";
-  std::cout << "======================================================================\n\n";
+  std::cout << "==============================================================="
+               "=======\n";
+  std::cout << "   Behringer BCD2000 Telemetria de Controles y Retorno a LEDs "
+               "(Hito 2)\n";
+  std::cout << "   Target: VID 0x1397, PID 0x00BD | Driver: WinUSB (x64)       "
+               "      \n";
+  std::cout << "==============================================================="
+               "=======\n\n";
 
   BcdUsbContext ctx{};
 
@@ -892,45 +969,62 @@ int main() {
   // --------------------------------------------------------------------------
   // Visual LED Greeting Sweep (All 26 Hardware LEDs: 0xB0, CC 0x00..0x19)
   // --------------------------------------------------------------------------
-  std::cout << "======================================================================\n";
-  std::cout << "       VERIFICACION FISICA DE RETORNO A LEDS (SALUDO VISUAL)          \n";
-  std::cout << "======================================================================\n";
-  std::cout << "  Mapa Hardware LED: 26 LEDs en 0xB0 (CC 0x00..0x19), valor 0x7F/0x00\n";
+  std::cout << "==============================================================="
+               "=======\n";
+  std::cout << "       VERIFICACION FISICA DE RETORNO A LEDS (SALUDO VISUAL)   "
+               "       \n";
+  std::cout << "==============================================================="
+               "=======\n";
+  std::cout << "  Mapa Hardware LED: 26 LEDs en 0xB0 (CC 0x00..0x19), valor "
+               "0x7F/0x00\n";
   std::cout << "  [Fase 1] Encendiendo los 26 LEDs fisicos de la BCD2000...\n";
 
   SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true);
   std::cout << "  [+] Comandos LED ON transmitidos ("
             << g_TotalLedCommandsSent.load() << " tramas de 64B a EP 0x"
             << HexByte(ctx.midiOutPipe) << ").\n";
-  std::cout << "  >>> ¡TODOS LOS LEDS DEBEN ESTAR VISIBLEMENTE ILUMINADOS AHORA! <<<\n";
+  std::cout << "  >>> ¡TODOS LOS LEDS DEBEN ESTAR VISIBLEMENTE ILUMINADOS "
+               "AHORA! <<<\n";
 
   for (int sec = 3; sec > 0; --sec) {
     std::cout << "      Manteniendo iluminacion activa: " << sec
               << " segundos restantes...\r" << std::flush;
     Sleep(1000);
   }
-  std::cout << "      Manteniendo iluminacion activa: completado!                      \n";
+  std::cout << "      Manteniendo iluminacion activa: completado!              "
+               "        \n";
 
   std::cout << "  [Fase 2] Apagando LEDs para iniciar monitor interactivo...\n";
   SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, false);
   std::cout << "  [+] Ciclo de saludo completado.\n\n";
 
-  std::cout << "======================================================================\n";
-  std::cout << "                 MODO MONITOR EN VIVO Y CONTROL BIDIRECCIONAL         \n";
-  std::cout << "======================================================================\n";
+  std::cout << "==============================================================="
+               "=======\n";
+  std::cout << "                 MODO MONITOR EN VIVO Y CONTROL BIDIRECCIONAL  "
+               "       \n";
+  std::cout << "==============================================================="
+               "=======\n";
   std::cout << "  INSTRUCCIONES:\n";
-  std::cout << "  - Mueve Faders, Knobs o Pitch: veras la BARRA DE % EN TIEMPO REAL.\n";
-  std::cout << "  - Gira Ruedas Jog: veras la barra y el desplazamiento relativo.\n";
-  std::cout << "  - Presiona cualquier Boton con LED: su PROPIO LED fisico conmutara.\n";
-  std::cout << "  --------------------------------------------------------------------\n";
+  std::cout << "  - Mueve Faders, Knobs o Pitch: veras la BARRA DE % EN TIEMPO "
+               "REAL.\n";
+  std::cout
+      << "  - Gira Ruedas Jog: veras la barra y el desplazamiento relativo.\n";
+  std::cout << "  - Presiona cualquier Boton con LED: su PROPIO LED fisico "
+               "conmutara.\n";
+  std::cout << "  "
+               "---------------------------------------------------------------"
+               "-----\n";
   std::cout << "  COMANDOS DE TECLADO INTERACTIVOS:\n";
   std::cout << "      [L] : Encender TODOS los 26 LEDs en una sola pasada.\n";
   std::cout << "      [A] : Apagar TODOS los 26 LEDs en una sola pasada.\n";
-  std::cout << "      [S] : Solicitar al hardware posicion actual de Knobs/Faders.\n";
-  std::cout << "      [T] : Mostrar tabla resumen con el estado actual de cada control.\n";
+  std::cout
+      << "      [S] : Solicitar al hardware posicion actual de Knobs/Faders.\n";
+  std::cout << "      [T] : Mostrar tabla resumen con el estado actual de cada "
+               "control.\n";
   std::cout << "      [C] : Limpiar pantalla de consola.\n";
   std::cout << "      [Q] o ESC : Salir ordenadamente del programa.\n";
-  std::cout << "----------------------------------------------------------------------\n\n";
+  std::cout << "---------------------------------------------------------------"
+               "-------\n\n";
 
   std::thread readerThread(MidiReaderThreadWorker, ctx.hMidiInterface,
                            ctx.midiInPipe, ctx.midiOutPipe);
@@ -950,10 +1044,9 @@ int main() {
         auto ev = localEvents.front();
         localEvents.pop();
 
-        batchOut << std::setfill(' ') << std::left
-                 << std::setw(10) << ("[" + ev.controlType + "]")
-                 << std::setw(36) << ev.controlName << " "
-                 << std::setw(36) << ev.detailValue;
+        batchOut << std::setfill(' ') << std::left << std::setw(10)
+                 << ("[" + ev.controlType + "]") << std::setw(36)
+                 << ev.controlName << " " << std::setw(36) << ev.detailValue;
 
         if (ev.controlType == "BUTTON") {
           if (ev.ledToggled) {
@@ -977,15 +1070,19 @@ int main() {
         g_Running.store(false);
         break;
       } else if (ch == 'l' || ch == 'L') {
-        std::cout << "\n[TEST] Encendiendo los 26 LEDs fisicos (0xB0, CC 0x00..0x19)...\n";
+        std::cout << "\n[TEST] Encendiendo los 26 LEDs fisicos (0xB0, CC "
+                     "0x00..0x19)...\n";
         SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, true);
-        std::cout << "  [+] Todos los 26 LEDs encendidos sin errores. Presiona [A] para apagarlos.\n\n";
+        std::cout << "  [+] Todos los 26 LEDs encendidos sin errores. Presiona "
+                     "[A] para apagarlos.\n\n";
       } else if (ch == 'a' || ch == 'A') {
-        std::cout << "\n[TEST] Apagando los 26 LEDs fisicos (0xB0, CC 0x00..0x19)...\n";
+        std::cout << "\n[TEST] Apagando los 26 LEDs fisicos (0xB0, CC "
+                     "0x00..0x19)...\n";
         SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, false);
         std::cout << "  [+] Todos los 26 LEDs apagados.\n\n";
       } else if (ch == 's' || ch == 'S') {
-        std::cout << "\n[SNAPSHOT] Solicitando estado actual de todos los Knobs y Faders (0xB0, 0x64, 0x7F)...\n";
+        std::cout << "\n[SNAPSHOT] Solicitando estado actual de todos los "
+                     "Knobs y Faders (0xB0, 0x64, 0x7F)...\n";
         g_PauseReader.store(true);
         {
           std::lock_guard<std::mutex> ioLock(g_UsbIoMutex);
@@ -995,15 +1092,23 @@ int main() {
         g_PauseReader.store(false);
       } else if (ch == 'c' || ch == 'C') {
         system("cls");
-        std::cout << "[INFO] Pantalla limpiada. Modo monitor en vivo activo...\n\n";
+        std::cout
+            << "[INFO] Pantalla limpiada. Modo monitor en vivo activo...\n\n";
       } else if (ch == 't' || ch == 'T') {
-        std::cout << "\n======================================================================\n";
-        std::cout << "                    TABLA RESUMEN DE ESTADO DE CONTROLES              \n";
-        std::cout << "======================================================================\n";
-        std::cout << "  Eventos MIDI decodificados : " << g_TotalEventsDecoded.load() << "\n";
-        std::cout << "  Tramas USB recibidas       : " << g_TotalPacketsReceived.load() << "\n";
-        std::cout << "  Tramas LED 64B enviadas    : " << g_TotalLedCommandsSent.load() << "\n";
-        std::cout << "----------------------------------------------------------------------\n";
+        std::cout << "\n======================================================="
+                     "===============\n";
+        std::cout << "                    TABLA RESUMEN DE ESTADO DE CONTROLES "
+                     "             \n";
+        std::cout << "========================================================="
+                     "=============\n";
+        std::cout << "  Eventos MIDI decodificados : "
+                  << g_TotalEventsDecoded.load() << "\n";
+        std::cout << "  Tramas USB recibidas       : "
+                  << g_TotalPacketsReceived.load() << "\n";
+        std::cout << "  Tramas LED 64B enviadas    : "
+                  << g_TotalLedCommandsSent.load() << "\n";
+        std::cout << "---------------------------------------------------------"
+                     "-------------\n";
         for (const auto &kv : g_ControlValues) {
           uint8_t st = static_cast<uint8_t>(kv.first >> 8);
           uint8_t d1 = static_cast<uint8_t>(kv.first & 0xFF);
@@ -1014,7 +1119,8 @@ int main() {
                     << static_cast<int>(val) << " "
                     << FormatProgressBar(val, 16) << "\n";
         }
-        std::cout << "======================================================================\n\n";
+        std::cout << "========================================================="
+                     "=============\n\n";
       }
     }
 
@@ -1025,7 +1131,8 @@ int main() {
     readerThread.join();
   }
 
-  std::cout << "[CLEANUP] Apagando todos los LEDs antes de cerrar la sesion USB...\n";
+  std::cout
+      << "[CLEANUP] Apagando todos los LEDs antes de cerrar la sesion USB...\n";
   SetAllLedsState(ctx.hMidiInterface, ctx.midiOutPipe, false);
 
   for (size_t i = ctx.allInterfaces.size(); i > 0; --i) {

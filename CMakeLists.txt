@@ -56,8 +56,21 @@ target_link_libraries(bcd2000_diag_midi
         ole32
 )
 
+# Milestone 3: Isochronous PCM Audio Streaming & Sine Wave Synthesizer
+add_executable(bcd2000_diag_audio
+    tools/bcd2000_diag_audio.cpp
+)
+
+target_link_libraries(bcd2000_diag_audio
+    PRIVATE
+        winusb
+        setupapi
+        ole32
+        avrt
+)
+
 # Set standard output directories matching verification roadmap
-set_target_properties(bcd2000_diag_usb bcd2000_diag_midi PROPERTIES
+set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
