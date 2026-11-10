@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -753,8 +754,31 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
     const size_t mask = kRingCapacityFrames - 1;
     uint64_t writeIdx = m_ringWriteFrames;
 
-    // Native 44.1 kHz path: bit-exact 1:1 copy into the hardware ring buffer
-    if (m_sampleRate >= 44099.0 && m_sampleRate <= 44101.0) {
+    // Test tone injection directly into the ASIO buffer loop:
+    // If enabled, synthesizes a -12 dBFS pure sine wave (440 Hz L / 880 Hz R)
+    // to test bit-perfect DAC playback directly through Mixxx/Ableton.
+    if (m_enableTestTone) {
+        constexpr double kTwoPi = 6.28318530717958647692;
+        const double incL = (kTwoPi * 440.0) / m_sampleRate;
+        const double incR = (kTwoPi * 880.0) / m_sampleRate;
+        constexpr double kAmp = 8192.0; // -12 dBFS (clean headroom, no clipping)
+
+        for (long s = 0; s < m_bufferSize; ++s) {
+            const int16_t sampleL = static_cast<int16_t>(std::sin(m_testTonePhaseL) * kAmp);
+            const int16_t sampleR = static_cast<int16_t>(std::sin(m_testTonePhaseR) * kAmp);
+            m_testTonePhaseL += incL;
+            if (m_testTonePhaseL >= kTwoPi) m_testTonePhaseL -= kTwoPi;
+            m_testTonePhaseR += incR;
+            if (m_testTonePhaseR >= kTwoPi) m_testTonePhaseR -= kTwoPi;
+
+            const size_t slot = static_cast<size_t>(writeIdx & mask) * 4;
+            m_outRingBuffer[slot + 0] = sampleL; // Master L
+            m_outRingBuffer[slot + 1] = sampleR; // Master R
+            m_outRingBuffer[slot + 2] = sampleL; // Phones L
+            m_outRingBuffer[slot + 3] = sampleR; // Phones R
+            writeIdx++;
+        }
+    } else if (m_sampleRate >= 44099.0 && m_sampleRate <= 44101.0) {
         for (long s = 0; s < m_bufferSize; ++s) {
             const size_t slot = static_cast<size_t>(writeIdx & mask) * 4;
             m_outRingBuffer[slot + 0] = ch0 ? ch0[s] : 0; // Master L
@@ -829,17 +853,18 @@ void Bcd2000AsioDriver::StreamingThreadMain() {
         const size_t framesPerPacket = (packetSize >= 8) ? (packetSize / 8) : 45;
 
         // Choose packetsPerUrb so that framesPerUrb (packetsPerUrb * framesPerPacket)
-        // is ALWAYS strictly less than or equal to m_bufferSize. This guarantees that
-        // each URB completion invokes InvokeHostBufferSwitch() at most ONCE, preventing
-        // double back-to-back callbacks (< 2 us apart) that cause DAW DSP underruns.
-        size_t packetsPerUrb = 4; // 4 ms (180 frames) for bufferSize >= 256
+        // is sized appropriately for the host's negotiated buffer size.
+        size_t packetsPerUrb = 4; // 4 ms (180 frames)
         size_t numUrbs = 8;       // 32 ms total USB Isochronous pipeline
         if (m_bufferSize <= 64) {
-            packetsPerUrb = 1;    // 1 ms (45 frames <= 64)
+            packetsPerUrb = 1;    // 1 ms (45 frames)
             numUrbs = 16;
         } else if (m_bufferSize <= 192) {
-            packetsPerUrb = 2;    // 2 ms (90 frames <= 128)
+            packetsPerUrb = 2;    // 2 ms (90 frames)
             numUrbs = 12;
+        } else if (m_bufferSize >= 1024) {
+            packetsPerUrb = 8;    // 8 ms (360 frames)
+            numUrbs = 8;
         }
 
         const ULONG urbBufferSize = static_cast<ULONG>(packetsPerUrb * packetSize);

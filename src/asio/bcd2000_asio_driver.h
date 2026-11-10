@@ -32,8 +32,8 @@ public:
     static constexpr long kNumInputs        = 4;
     static constexpr long kNumOutputs       = 4;
     static constexpr long kMinBufferSize    = 64;
-    static constexpr long kMaxBufferSize    = 512;
-    static constexpr long kPreferredBufSize = 256;
+    static constexpr long kMaxBufferSize    = 4096;
+    static constexpr long kPreferredBufSize = 512;
     static constexpr long kBufferGranularity = 64;
     static constexpr double kDefaultSampleRate = 44100.0;
 
@@ -115,6 +115,12 @@ private:
     // Continuous fractional resampler state for 32000 / 48000 / 88200 / 96000 Hz
     double m_resamplePhase{0.0};
     int16_t m_resampleHistory[4][kNumOutputs]{};
+
+    // Diagnostics: In-driver Sine Wave Generator (-12 dBFS 440 Hz / 880 Hz)
+    // to test pure mathematical buffer integrity without DAW mixing/sample format issues.
+    bool m_enableTestTone{true};
+    double m_testTonePhaseL{0.0};
+    double m_testTonePhaseR{0.0};
 
     // Real-time streaming state
     std::atomic<bool> m_streamingActive{false};
