@@ -69,10 +69,51 @@ target_link_libraries(bcd2000_diag_audio
         avrt
 )
 
+# Milestone 4: 64-bit COM ASIO Driver DLL (bcd2000_asio.dll)
+add_library(bcd2000_asio SHARED
+    src/asio/bcd2000_asio_driver.cpp
+    src/asio/dllmain_registry.cpp
+    src/asio/bcd2000_asio.def
+)
+
+target_link_libraries(bcd2000_asio
+    PRIVATE
+        winusb
+        setupapi
+        ole32
+        advapi32
+        user32
+        avrt
+)
+
+# Milestone 4: 64-bit ASIO Host Verification Utility (hostsample.exe)
+add_executable(hostsample
+    third_party/asio-sdk/host/pc/hostsample.cpp
+)
+
+target_link_libraries(hostsample
+    PRIVATE
+        ole32
+        advapi32
+        user32
+)
+
+# Copy hostsample.exe to third_party/asio-sdk/host/pc/hostsample.exe to match ROADMAP_VERIFICATION.md
+add_custom_command(TARGET hostsample POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:hostsample>
+        "${CMAKE_SOURCE_DIR}/third_party/asio-sdk/host/pc/hostsample.exe"
+    COMMENT "Copying hostsample.exe to third_party/asio-sdk/host/pc/hostsample.exe"
+)
+
 # Set standard output directories matching verification roadmap
-set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio PROPERTIES
+set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio bcd2000_asio hostsample PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
     RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/RelWithDebInfo"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
+    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/RelWithDebInfo"
 )
