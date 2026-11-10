@@ -82,6 +82,8 @@ private:
     void SetStatusLeds(bool turnOn);
 
     void StreamingThreadMain();
+    void UsbStreamingThreadMain();
+    void AsioHostThreadMain();
     void InvokeHostBufferSwitch();
     uint64_t QuerySystemTimeNanoseconds() const;
 
@@ -107,24 +109,22 @@ private:
 
     // Interleaved 4-channel S16_LE ring buffer for decoupling power-of-2 ASIO
     // buffers from 45-frame (360-byte) USB 1.1 Isochronous URBs
-    static constexpr size_t kRingCapacityFrames = 16384; // Power of 2
+    static constexpr size_t kRingCapacityFrames = 32768; // Power of 2 (~728 ms headroom)
     std::vector<int16_t> m_outRingBuffer;                // kRingCapacityFrames * 4 int16_t
-    uint64_t m_ringWriteFrames{0};
-    uint64_t m_ringReadFrames{0};
+    std::atomic<uint64_t> m_ringWriteFrames{0};
+    std::atomic<uint64_t> m_ringReadFrames{0};
 
-    // Continuous fractional resampler state for 32000 / 48000 / 88200 / 96000 Hz
+    // Continuous fractional resampler state for any host sample rate (32k, 44.1k, 48k, 88.2k, 96k)
+    // to match the hardware's 45,000 frames/sec (45 frames/ms) USB transfer rate.
     double m_resamplePhase{0.0};
     int16_t m_resampleHistory[4][kNumOutputs]{};
 
-    // Diagnostics: In-driver Sine Wave Generator (-12 dBFS 440 Hz / 880 Hz)
-    // to test pure mathematical buffer integrity without DAW mixing/sample format issues.
-    bool m_enableTestTone{true};
-    double m_testTonePhaseL{0.0};
-    double m_testTonePhaseR{0.0};
-
-    // Real-time streaming state
+    // Real-time decoupled streaming state
     std::atomic<bool> m_streamingActive{false};
-    std::thread m_streamingThread;
+    std::atomic<bool> m_prefillReady{false};
+    HANDLE m_hAsioTriggerEvent{nullptr};
+    std::thread m_usbThread;
+    std::thread m_asioThread;
     long m_toggleIndex{0};
     std::atomic<uint64_t> m_samplePosition{0};
     std::atomic<uint64_t> m_systemTimeNs{0};
