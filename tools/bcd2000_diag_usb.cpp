@@ -194,9 +194,10 @@ bool SendBcdMidiFrame(
     frame[1] = 0x00;
     memcpy(&frame[2], midiPayload, payloadLen);
 
+    ULONG sendLen = 2 + payloadLen;
     ULONG bytesWritten = 0;
-    BOOL ok = WinUsb_WritePipe(hWinUsb, outPipeId, frame, sizeof(frame), &bytesWritten, nullptr);
-    return (ok && bytesWritten == sizeof(frame));
+    BOOL ok = WinUsb_WritePipe(hWinUsb, outPipeId, frame, sendLen, &bytesWritten, nullptr);
+    return (ok && bytesWritten == sendLen);
 }
 
 /**
