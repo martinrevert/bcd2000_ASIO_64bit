@@ -147,10 +147,15 @@ bool RegisterInRootHive(HKEY hRootKey, const wchar_t *dllPath) {
     return true;
 }
 
-void UnregisterInRootHive(HKEY hRootKey) {
-    RegDeleteKeyExW(hRootKey, kInprocSubKeyPath, KEY_WOW64_64KEY, 0);
-    RegDeleteKeyExW(hRootKey, kClsidSubKeyPath, KEY_WOW64_64KEY, 0);
-    RegDeleteKeyExW(hRootKey, kAsioSubKeyPath, KEY_WOW64_64KEY, 0);
+bool UnregisterInRootHive(HKEY hRootKey) {
+    LONG s1 = RegDeleteKeyExW(hRootKey, kInprocSubKeyPath, KEY_WOW64_64KEY, 0);
+    LONG s2 = RegDeleteKeyExW(hRootKey, kClsidSubKeyPath, KEY_WOW64_64KEY, 0);
+    LONG s3 = RegDeleteKeyExW(hRootKey, kAsioSubKeyPath, KEY_WOW64_64KEY, 0);
+    RegDeleteTreeW(hRootKey, kClsidSubKeyPath);
+    RegDeleteTreeW(hRootKey, kAsioSubKeyPath);
+    return (s1 == ERROR_SUCCESS || s1 == ERROR_FILE_NOT_FOUND) &&
+           (s2 == ERROR_SUCCESS || s2 == ERROR_FILE_NOT_FOUND) &&
+           (s3 == ERROR_SUCCESS || s3 == ERROR_FILE_NOT_FOUND);
 }
 
 } // namespace
@@ -207,7 +212,7 @@ extern "C" HRESULT __stdcall DllRegisterServer(void) {
 }
 
 extern "C" HRESULT __stdcall DllUnregisterServer(void) {
-    UnregisterInRootHive(HKEY_LOCAL_MACHINE);
-    UnregisterInRootHive(HKEY_CURRENT_USER);
-    return S_OK;
+    const bool hkcuOk = UnregisterInRootHive(HKEY_CURRENT_USER);
+    const bool hklmOk = UnregisterInRootHive(HKEY_LOCAL_MACHINE);
+    return (hklmOk && hkcuOk) ? S_OK : E_ACCESSDENIED;
 }
