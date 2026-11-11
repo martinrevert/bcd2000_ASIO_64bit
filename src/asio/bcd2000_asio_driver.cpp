@@ -113,11 +113,13 @@ STDMETHODIMP_(ULONG) Bcd2000AsioDriver::Release() {
 
 bool Bcd2000AsioDriver::OpenUsbHardware() {
     CloseUsbHardware();
+    bcd2000::TraceLog("ASIO", "OpenUsbHardware()");
 
     const std::wstring targetPath = bcd2000::FindBcd2000DevicePath();
     if (targetPath.empty()) {
         std::snprintf(m_errorMessage, sizeof(m_errorMessage),
                       "BCD2000 (1397:00BD) WinUSB device not found.");
+        bcd2000::TraceLog("ASIO", "FindBcd2000DevicePath returned empty");
         return false;
     }
 
@@ -129,38 +131,47 @@ bool Bcd2000AsioDriver::OpenUsbHardware() {
 
     if (m_hDevice == INVALID_HANDLE_VALUE) {
         const DWORD openErr = GetLastError();
+        bcd2000::TraceLog("ASIO", "Initial CreateFileW failed err=%lu", openErr);
         if (openErr == ERROR_ACCESS_DENIED || openErr == ERROR_SHARING_VIOLATION) {
             // Standalone bcd2000_midi.dll may hold WinUSB; request graceful handoff
-            if (WaitNamedPipeW(bcd2000::kMidiCtrlPipeName, 100)) {
-                HANDLE hCtrl = CreateFileW(bcd2000::kMidiCtrlPipeName,
-                                           GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                                           OPEN_EXISTING, 0, nullptr);
-                if (hCtrl != INVALID_HANDLE_VALUE) {
-                    const char cmd = 'R';
-                    DWORD written = 0;
-                    WriteFile(hCtrl, &cmd, 1, &written, nullptr);
-                    char ack[4]{};
-                    DWORD read = 0;
-                    ReadFile(hCtrl, ack, sizeof(ack), &read, nullptr);
-                    CloseHandle(hCtrl);
+            for (int waitAttempt = 0; waitAttempt < 3 && m_hDevice == INVALID_HANDLE_VALUE; ++waitAttempt) {
+                if (WaitNamedPipeW(bcd2000::kMidiCtrlPipeName, 120)) {
+                    HANDLE hCtrl = CreateFileW(bcd2000::kMidiCtrlPipeName,
+                                               GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                                               OPEN_EXISTING, 0, nullptr);
+                    if (hCtrl != INVALID_HANDLE_VALUE) {
+                        const char cmd = 'R';
+                        DWORD written = 0;
+                        WriteFile(hCtrl, &cmd, 1, &written, nullptr);
+                        char ack[4]{};
+                        DWORD read = 0;
+                        ReadFile(hCtrl, ack, sizeof(ack), &read, nullptr);
+                        CloseHandle(hCtrl);
+                        bcd2000::TraceLog("ASIO", "CtrlPipe handoff ack='%c' read=%lu",
+                                          ack[0] ? ack[0] : '?', read);
+                    }
+                    for (int attempt = 0; attempt < 15 && m_hDevice == INVALID_HANDLE_VALUE; ++attempt) {
+                        Sleep(20);
+                        m_hDevice = CreateFileW(targetPath.c_str(),
+                                                GENERIC_WRITE | GENERIC_READ,
+                                                FILE_SHARE_WRITE | FILE_SHARE_READ,
+                                                nullptr, OPEN_EXISTING,
+                                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+                                                nullptr);
+                    }
+                    break;
                 }
-                for (int attempt = 0; attempt < 8 && m_hDevice == INVALID_HANDLE_VALUE; ++attempt) {
-                    Sleep(25);
-                    m_hDevice = CreateFileW(targetPath.c_str(),
-                                            GENERIC_WRITE | GENERIC_READ,
-                                            FILE_SHARE_WRITE | FILE_SHARE_READ,
-                                            nullptr, OPEN_EXISTING,
-                                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
-                                            nullptr);
-                }
+                Sleep(30);
             }
         }
     }
 
     if (m_hDevice == INVALID_HANDLE_VALUE) {
+        DWORD finalErr = GetLastError();
         std::snprintf(m_errorMessage, sizeof(m_errorMessage),
                       "CreateFileW failed on BCD2000 (err=%lu).",
-                      GetLastError());
+                      finalErr);
+        bcd2000::TraceLog("ASIO", "OpenUsbHardware failed finalErr=%lu", finalErr);
         return false;
     }
 
@@ -279,6 +290,8 @@ bool Bcd2000AsioDriver::OpenUsbHardware() {
                          sizeof(infTimeoutMs), &infTimeoutMs);
 
     m_hardwareConnected = true;
+    bcd2000::TraceLog("ASIO", "OpenUsbHardware OK (outPipe=0x%02X inPipe=0x%02X pkt=%lu)",
+                      m_audioOutPipe, m_audioInPipe, m_audioOutBytesPerInterval);
     StartMidiBridge();
     return true;
 }
@@ -569,6 +582,7 @@ void Bcd2000AsioDriver::MidiPipeServerThreadMain() {
 
 ASIOBool Bcd2000AsioDriver::init(void *sysHandle) {
     m_sysHandle = sysHandle;
+    bcd2000::TraceLog("ASIO", "init(state=%d)", static_cast<int>(m_state));
 
     if (m_state != DriverState::Loaded) {
         return ASIOTrue;
@@ -672,6 +686,7 @@ ASIOError Bcd2000AsioDriver::setSampleRate(ASIOSampleRate sampleRate) {
 
     const bool changed = (m_sampleRate != matchedRate);
     m_sampleRate = matchedRate;
+    bcd2000::TraceLog("ASIO", "setSampleRate(%.0f) changed=%d", m_sampleRate, changed ? 1 : 0);
     if (changed && m_callbacks.sampleRateDidChange) {
         m_callbacks.sampleRateDidChange(m_sampleRate);
     }
@@ -810,6 +825,11 @@ ASIOError Bcd2000AsioDriver::createBuffers(ASIOBufferInfo *bufferInfos,
     }
 
     m_state = DriverState::Prepared;
+    bcd2000::TraceLog("ASIO",
+                      "createBuffers numCh=%ld bufSize=%ld rate=%.0f timeInfo=%d outActive=[%d,%d,%d,%d]",
+                      numChannels, bufferSize, m_sampleRate, m_supportsTimeInfo ? 1 : 0,
+                      m_outputActive[0] ? 1 : 0, m_outputActive[1] ? 1 : 0,
+                      m_outputActive[2] ? 1 : 0, m_outputActive[3] ? 1 : 0);
     return ASE_OK;
 }
 
@@ -871,6 +891,9 @@ ASIOError Bcd2000AsioDriver::start() {
     // Launch decoupled real-time threads:
     // 1. AsioHostThread: drives DAW host bufferSwitch callbacks and fills the ring buffer
     // 2. UsbStreamingThread: drives continuous USB Isochronous Endpoint 0x02 OUT transfers
+    bcd2000::TraceLog("ASIO", "start() hw=%d rate=%.0f buf=%ld midiClients=%d",
+                      m_hardwareConnected ? 1 : 0, m_sampleRate, m_bufferSize,
+                      HasConnectedMidiClients() ? 1 : 0);
     m_asioThread = std::thread(&Bcd2000AsioDriver::AsioHostThreadMain, this);
     m_usbThread = std::thread(&Bcd2000AsioDriver::UsbStreamingThreadMain, this);
 
@@ -904,6 +927,7 @@ ASIOError Bcd2000AsioDriver::stop() {
     }
 
     m_state = DriverState::Prepared;
+    bcd2000::TraceLog("ASIO", "stop() complete");
     return ASE_OK;
 }
 
@@ -1015,6 +1039,10 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
     // resampling when host sample rate is 44.1 kHz. Non-44.1k host rates resample against live EP 0x83 IN rate.
     const double usbTargetRate = m_usbTargetRate.load(std::memory_order_acquire);
     const bool exactMode = m_exactModeActive.load(std::memory_order_acquire);
+    if (curPos == 0) {
+        bcd2000::TraceLog("ASIO", "First bufferSwitch cb! exactMode=%d targetRate=%.2f sampleRate=%.0f",
+                          exactMode ? 1 : 0, usbTargetRate, m_sampleRate);
+    }
     const bool exactRateMatch = exactMode
                                     ? (std::abs(m_sampleRate - kDefaultSampleRate) < 0.01)
                                     : (std::abs(m_sampleRate - usbTargetRate) < 0.01);
@@ -1134,6 +1162,7 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
 
     // If hardware is not connected, run high-precision fallback timer loop
     if (!m_hardwareConnected || !m_hAudioInterface) {
+        bcd2000::TraceLog("ASIO", "UsbStreamingThreadMain: TIMER FALLBACK (no hardware!)");
         m_usbTargetRate.store(m_sampleRate, std::memory_order_release);
         m_usbRateReady.store(true, std::memory_order_release);
         const double periodSec = static_cast<double>(m_bufferSize) / m_sampleRate;
@@ -1511,10 +1540,16 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
     bool pipelineActive = true;
     for (size_t i = 0; i < numUrbs; ++i) {
         if (!HarvestAndFillUrb(i)) {
+            bcd2000::TraceLog("ASIO", "UsbStreamingThreadMain: Prime failed at urb=%zu err=%lu",
+                              i, GetLastError());
             pipelineActive = false;
             break;
         }
     }
+
+    bcd2000::TraceLog("ASIO", "UsbStreamingThreadMain: pipelineActive=%d useExact44100=%d inLocked=%d",
+                      pipelineActive ? 1 : 0, useExact44100 ? 1 : 0,
+                      inClockLocked.load() ? 1 : 0);
 
     size_t nextReap = 0;
     while (pipelineActive && m_streamingActive.load(std::memory_order_acquire)) {
@@ -1524,6 +1559,8 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
         }
         DWORD waitRes = WaitForSingleObject(slot.ov.hEvent, 1000);
         if (waitRes != WAIT_OBJECT_0) {
+            bcd2000::TraceLog("ASIO", "UsbStreamingThreadMain: Wait timeout waitRes=%lu err=%lu",
+                              waitRes, GetLastError());
             break;
         }
         DWORD bytesTransferred = 0;

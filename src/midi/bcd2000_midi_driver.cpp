@@ -232,12 +232,17 @@ private:
         m_hStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         m_hHandoffEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
+        bcd2000::TraceLog("MIDI", "StartTransportLocked()");
+
+        // Start control pipe server BEFORE opening WinUSB so ASIO can request
+        // immediate handoff at any moment without missing a window.
+        m_ctrlThread = std::thread(&Bcd2000MidiTransport::CtrlPipeThreadMain, this);
+
         // Probe once synchronously on initial open so immediate MODM_DATA works right away
         if (!TryConnectAsioPipe()) {
             TryOpenUsbStandalone();
         }
 
-        m_ctrlThread = std::thread(&Bcd2000MidiTransport::CtrlPipeThreadMain, this);
         m_transportThread = std::thread(&Bcd2000MidiTransport::TransportThreadMain, this);
     }
 
@@ -303,6 +308,7 @@ private:
 
         std::lock_guard<std::mutex> writeLock(m_writeMutex);
         m_hAsioPipe = hPipe;
+        bcd2000::TraceLog("MIDI", "Connected to ASIO MIDI pipe (Mode A)");
         return true;
     }
 
@@ -312,15 +318,21 @@ private:
             CancelIoEx(m_hAsioPipe, nullptr);
             CloseHandle(m_hAsioPipe);
             m_hAsioPipe = INVALID_HANDLE_VALUE;
+            bcd2000::TraceLog("MIDI", "Closed ASIO MIDI pipe");
         }
     }
 
     bool TryOpenUsbStandalone() {
+        if (m_handoffRequested.load(std::memory_order_acquire) ||
+            m_stopRequested.load(std::memory_order_acquire)) {
+            return false;
+        }
         const std::wstring devPath = bcd2000::FindBcd2000DevicePath();
         if (devPath.empty()) {
             return false;
         }
 
+        m_usbActive.store(true, std::memory_order_release);
         HANDLE hDev = CreateFileW(
             devPath.c_str(),
             GENERIC_WRITE | GENERIC_READ,
@@ -330,12 +342,16 @@ private:
             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
             nullptr);
         if (hDev == INVALID_HANDLE_VALUE) {
+            DWORD err = GetLastError();
+            m_usbActive.store(false, std::memory_order_release);
+            bcd2000::TraceLog("MIDI", "TryOpenUsbStandalone CreateFileW failed err=%lu", err);
             return false;
         }
 
         WINUSB_INTERFACE_HANDLE hIf0 = nullptr;
         if (!WinUsb_Initialize(hDev, &hIf0)) {
             CloseHandle(hDev);
+            m_usbActive.store(false, std::memory_order_release);
             return false;
         }
 
@@ -346,6 +362,22 @@ private:
             if (WinUsb_GetAssociatedInterface(hIf0, assoc, &hAssoc)) {
                 allIfs.push_back(hAssoc);
             }
+        }
+
+        auto abortAndFreeTemp = [&]() {
+            for (size_t i = allIfs.size(); i > 0; --i) {
+                if (allIfs[i - 1]) {
+                    WinUsb_Free(allIfs[i - 1]);
+                }
+            }
+            CloseHandle(hDev);
+            m_usbActive.store(false, std::memory_order_release);
+        };
+
+        if (m_handoffRequested.load(std::memory_order_acquire) ||
+            m_stopRequested.load(std::memory_order_acquire)) {
+            abortAndFreeTemp();
+            return false;
         }
 
         WINUSB_INTERFACE_HANDLE hMidiIf = nullptr;
@@ -417,6 +449,14 @@ private:
             m_midiInPipe = midiIn;
             m_midiOutPipe = midiOut;
         }
+        if (m_handoffRequested.load(std::memory_order_acquire) ||
+            m_stopRequested.load(std::memory_order_acquire)) {
+            CloseUsbStandalone();
+            m_usbActive.store(false, std::memory_order_release);
+            bcd2000::TraceLog("MIDI", "TryOpenUsbStandalone aborted for handoff");
+            return false;
+        }
+        bcd2000::TraceLog("MIDI", "Opened WinUSB standalone (Mode B)");
         return true;
     }
 
@@ -433,7 +473,9 @@ private:
         if (m_hDevice != INVALID_HANDLE_VALUE) {
             CloseHandle(m_hDevice);
             m_hDevice = INVALID_HANDLE_VALUE;
+            bcd2000::TraceLog("MIDI", "Closed WinUSB standalone");
         }
+        m_usbActive.store(false, std::memory_order_release);
     }
 
     void CtrlPipeThreadMain() {
@@ -492,6 +534,8 @@ private:
 
                 if (rOk && bytesRead >= 1 && cmd == 'R') {
                     // Yield standalone WinUSB handle to bcd2000_asio.dll
+                    bcd2000::TraceLog("MIDI", "CtrlPipe received 'R' handoff request (usbActive=%d)",
+                                      m_usbActive.load() ? 1 : 0);
                     m_handoffInProgress.store(true, std::memory_order_release);
                     m_handoffRequested.store(true, std::memory_order_release);
                     if (m_hHandoffEvent) {
@@ -501,8 +545,8 @@ private:
                         WinUsb_AbortPipe(m_hMidiInterface, m_midiInPipe);
                     }
 
-                    // Wait until TransportThreadMain has freed WinUSB
-                    for (int i = 0; i < 100; ++i) {
+                    // Wait until TransportThreadMain / TryOpenUsbStandalone has freed WinUSB
+                    for (int i = 0; i < 200; ++i) {
                         if (!m_usbActive.load(std::memory_order_acquire)) {
                             break;
                         }
@@ -519,6 +563,8 @@ private:
                         WaitForSingleObject(hConnEvent, 100);
                     }
                     FlushFileBuffers(hPipe);
+                    bcd2000::TraceLog("MIDI", "CtrlPipe sent 'K' handoff ack (usbActive=%d)",
+                                      m_usbActive.load() ? 1 : 0);
                 }
                 DisconnectNamedPipe(hPipe);
             }

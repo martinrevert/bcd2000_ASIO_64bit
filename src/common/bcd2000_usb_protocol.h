@@ -21,12 +21,58 @@
 #include <winusb.h>
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
 namespace bcd2000 {
+
+inline void TraceLog(const char *tag, const char *fmt, ...) {
+    wchar_t tempDir[MAX_PATH]{};
+    DWORD n = GetTempPathW(MAX_PATH, tempDir);
+    if (n == 0 || n >= MAX_PATH) {
+        return;
+    }
+    std::wstring path(tempDir);
+    path += L"bcd2000_trace.log";
+
+    HANDLE hFile = CreateFileW(
+        path.c_str(),
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    char body[512]{};
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(body, sizeof(body), fmt, args);
+    va_end(args);
+
+    char line[640]{};
+    int len = std::snprintf(
+        line, sizeof(line),
+        "[%9llu][pid=%5lu][tid=%5lu][%s] %s\r\n",
+        static_cast<unsigned long long>(GetTickCount64()),
+        GetCurrentProcessId(),
+        GetCurrentThreadId(),
+        tag ? tag : "?",
+        body);
+    if (len > 0) {
+        DWORD written = 0;
+        WriteFile(hFile, line, static_cast<DWORD>(std::min<int>(len, sizeof(line) - 1)),
+                  &written, nullptr);
+    }
+    CloseHandle(hFile);
+}
 
 // Generic WinUSB Device Interface GUID (Zadig / WinUSB default)
 // {DEE824EF-729B-4A0E-9C14-B7117D33A817}
@@ -251,3 +297,4 @@ inline size_t UnpackShortMidiMessage(DWORD packedMsg, uint8_t outBytes[3]) {
 } // namespace bcd2000
 
 #endif // BCD2000_USB_PROTOCOL_H
+
