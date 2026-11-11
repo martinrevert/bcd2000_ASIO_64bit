@@ -1039,10 +1039,6 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
     // resampling when host sample rate is 44.1 kHz. Non-44.1k host rates resample against live EP 0x83 IN rate.
     const double usbTargetRate = m_usbTargetRate.load(std::memory_order_acquire);
     const bool exactMode = m_exactModeActive.load(std::memory_order_acquire);
-    if (curPos == 0) {
-        bcd2000::TraceLog("ASIO", "First bufferSwitch cb! exactMode=%d targetRate=%.2f sampleRate=%.0f",
-                          exactMode ? 1 : 0, usbTargetRate, m_sampleRate);
-    }
     const bool exactRateMatch = exactMode
                                     ? (std::abs(m_sampleRate - kDefaultSampleRate) < 0.01)
                                     : (std::abs(m_sampleRate - usbTargetRate) < 0.01);
@@ -1552,9 +1548,11 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
                       inClockLocked.load() ? 1 : 0);
 
     size_t nextReap = 0;
+    uint64_t urbsCompleted = 0;
     while (pipelineActive && m_streamingActive.load(std::memory_order_acquire)) {
         UrbSlot &slot = urbs[nextReap];
         if (!slot.inFlight) {
+            bcd2000::TraceLog("ASIO", "UsbStreamingThreadMain: slot not inFlight at urb=%zu", nextReap);
             break;
         }
         DWORD waitRes = WaitForSingleObject(slot.ov.hEvent, 1000);
@@ -1564,18 +1562,26 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
             break;
         }
         DWORD bytesTransferred = 0;
-        WinUsb_GetOverlappedResult(m_hAudioInterface, &slot.ov, &bytesTransferred, FALSE);
+        BOOL gOk = WinUsb_GetOverlappedResult(m_hAudioInterface, &slot.ov, &bytesTransferred, FALSE);
+        if (!gOk) {
+            bcd2000::TraceLog("ASIO", "UsbStreamingThreadMain: GetOverlappedResult err=%lu", GetLastError());
+        }
         slot.inFlight = false;
+        ++urbsCompleted;
 
         if (!m_streamingActive.load(std::memory_order_acquire)) {
             break;
         }
 
         if (!HarvestAndFillUrb(nextReap)) {
+            bcd2000::TraceLog("ASIO", "UsbStreamingThreadMain: HarvestAndFillUrb failed err=%lu", GetLastError());
             break;
         }
         nextReap = (nextReap + 1) % numUrbs;
     }
+    bcd2000::TraceLog("ASIO", "UsbStreamingThreadMain: loop exit urbsCompleted=%llu active=%d",
+                      static_cast<unsigned long long>(urbsCompleted),
+                      m_streamingActive.load() ? 1 : 0);
 
     // Stop EP 0x83 IN implicit clock tracker cleanly before tearing down pipes
     if (inSyncThread.joinable()) {
