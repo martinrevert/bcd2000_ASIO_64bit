@@ -1,3 +1,6 @@
+> [!NOTE]
+> **Documento Histórico / Historical Blueprint:** Este documento recoge la especificación inicial y los 5 hitos fundacionales de verificación del proyecto. Para la **documentación técnica vigente** —incluyendo el diagrama de arquitectura completo, el driver WinMM MIDI 64-bit, el puente IPC por Named Pipes, el rastreo implícito de reloj en EP `0x83` IN, el instalador WinUSB/NSIS y las reglas para colaboradores— consulta [`TECHNICS.md`](../TECHNICS.md) ([versión en español](i18n/TECHNICS.es.md)).
+
 # Especificación Técnica y Roadmap de Verificación: Driver ASIO Moderno de 64 bits para Behringer BCD2000
 
 Este documento define la arquitectura técnica, el inventario de herramientas de desarrollo (BOM) y el protocolo de pruebas funcionales incrementales para la construcción de un controlador ASIO de 64 bits para la consola Behringer BCD2000 utilizando su firmware de fábrica original.
