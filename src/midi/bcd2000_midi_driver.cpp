@@ -786,10 +786,14 @@ bool RegisterDrivers32Slot(const wchar_t *dllPath) {
         std::wcscpy(chosenSlot, firstEmptySlot);
     }
 
-    const DWORD byteLen = static_cast<DWORD>((std::wcslen(dllPath) + 1) * sizeof(wchar_t));
+    const wchar_t *regValueStr =
+        EndsWithInsensitive(dllPath, L"\\System32\\bcd2000_midi.dll")
+            ? kMidiDllFileNameW
+            : dllPath;
+    const DWORD byteLen = static_cast<DWORD>((std::wcslen(regValueStr) + 1) * sizeof(wchar_t));
     status = RegSetValueExW(
         hKey, chosenSlot, 0, REG_SZ,
-        reinterpret_cast<const BYTE *>(dllPath), byteLen);
+        reinterpret_cast<const BYTE *>(regValueStr), byteLen);
     RegCloseKey(hKey);
 
     if (status != ERROR_SUCCESS) {
@@ -802,7 +806,7 @@ bool RegisterDrivers32Slot(const wchar_t *dllPath) {
                         REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_WOW64_64KEY,
                         nullptr, &hDescKey, nullptr) == ERROR_SUCCESS) {
         const DWORD descLen = static_cast<DWORD>((std::wcslen(kMidiDeviceNameW) + 1) * sizeof(wchar_t));
-        RegSetValueExW(hDescKey, dllPath, 0, REG_SZ,
+        RegSetValueExW(hDescKey, regValueStr, 0, REG_SZ,
                        reinterpret_cast<const BYTE *>(kMidiDeviceNameW), descLen);
         RegCloseKey(hDescKey);
     }

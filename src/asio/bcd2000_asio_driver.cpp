@@ -273,6 +273,11 @@ bool Bcd2000AsioDriver::OpenUsbHardware() {
         }
     }
 
+    // Restore infinite timeout on EP 0x81 IN before starting overlapped MIDI reader
+    ULONG infTimeoutMs = 0;
+    WinUsb_SetPipePolicy(m_hMidiInterface, m_midiInPipe, PIPE_TRANSFER_TIMEOUT,
+                         sizeof(infTimeoutMs), &infTimeoutMs);
+
     m_hardwareConnected = true;
     StartMidiBridge();
     return true;

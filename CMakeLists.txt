@@ -13,6 +13,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Static MSVC runtime (/MT) so bcd2000_asio.dll and System32\bcd2000_midi.dll
+# never depend on host VCRUNTIME140.dll / MSVCP140.dll inside any DAW process.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # Global compiler definitions
 add_compile_definitions(
     UNICODE

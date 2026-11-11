@@ -1,5 +1,6 @@
 param (
-    [string]$Config = "RelWithDebInfo"
+    [string]$Config = "RelWithDebInfo",
+    [switch]$ElevatedChild
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,6 +9,7 @@ $AsioCandidate = Join-Path $ScriptDir "..\build\$Config\bcd2000_asio.dll"
 $MidiCandidate = Join-Path $ScriptDir "..\build\$Config\bcd2000_midi.dll"
 $AsioDllPath = (Resolve-Path $AsioCandidate -ErrorAction SilentlyContinue).Path
 $MidiDllPath = (Resolve-Path $MidiCandidate -ErrorAction SilentlyContinue).Path
+$System32MidiPath = Join-Path $env:WINDIR "System32\bcd2000_midi.dll"
 
 $RegKeyHKLM   = "HKLM:\SOFTWARE\ASIO\Behringer BCD2000 ASIO 64-bit"
 $RegKeyHKCU   = "HKCU:\SOFTWARE\ASIO\Behringer BCD2000 ASIO 64-bit"
@@ -19,15 +21,7 @@ Write-Host "====================================================================
 Write-Host "   Desinstalador Driver ASIO COM + WinMM MIDI 64-bit (BCD2000)" -ForegroundColor Cyan
 Write-Host "======================================================================" -ForegroundColor Cyan
 
-if ($AsioDllPath -and (Test-Path $AsioDllPath)) {
-    Write-Host "[1/3] Ejecutando regsvr32 /u sobre ASIO: $AsioDllPath" -ForegroundColor Yellow
-    & regsvr32.exe /u /s "$AsioDllPath"
-} else {
-    Write-Host "[1/3] Binario ASIO no encontrado en $AsioCandidate; limpiando Registro..." -ForegroundColor Yellow
-}
-
 # Limpiar claves ASIO en HKCU (no requiere elevacion)
-Write-Host "[2/3] Verificando y limpiando claves en HKEY_CURRENT_USER..." -ForegroundColor Yellow
 if (Test-Path $RegKeyHKCU) {
     Remove-Item -Path $RegKeyHKCU -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -35,34 +29,48 @@ if (Test-Path $ClsidKeyHKCU) {
     Remove-Item -Path $ClsidKeyHKCU -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$HasMidiReg = $false
-$props = Get-ItemProperty -Path $Drivers32Key -ErrorAction SilentlyContinue
-if ($props) {
-    foreach ($i in 0..9) {
-        $name = if ($i -eq 0) { "midi" } else { "midi$i" }
-        $val = $props.$name
-        if ($val -and ($val -like "*bcd2000_midi.dll")) {
-            $HasMidiReg = $true
+$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if ($IsAdmin) {
+    if ($AsioDllPath -and (Test-Path $AsioDllPath)) {
+        Start-Process -FilePath "$env:WINDIR\System32\regsvr32.exe" -ArgumentList "/u /s `"$AsioDllPath`"" -Wait | Out-Null
+    }
+    if (Test-Path $System32MidiPath) {
+        Start-Process -FilePath "$env:WINDIR\System32\regsvr32.exe" -ArgumentList "/u /s `"$System32MidiPath`"" -Wait | Out-Null
+        Remove-Item -Path $System32MidiPath -Force -ErrorAction SilentlyContinue
+    } elseif ($MidiDllPath -and (Test-Path $MidiDllPath)) {
+        Start-Process -FilePath "$env:WINDIR\System32\regsvr32.exe" -ArgumentList "/u /s `"$MidiDllPath`"" -Wait | Out-Null
+    }
+    if (Test-Path $RegKeyHKLM) {
+        Remove-Item -Path $RegKeyHKLM -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $ClsidKeyHKLM) {
+        Remove-Item -Path $ClsidKeyHKLM -Recurse -Force -ErrorAction SilentlyContinue
+    }
+} else {
+    $HasMidiReg = Test-Path $System32MidiPath
+    $props = Get-ItemProperty -Path $Drivers32Key -ErrorAction SilentlyContinue
+    if ($props) {
+        foreach ($i in 0..9) {
+            $name = if ($i -eq 0) { "midi" } else { "midi$i" }
+            $val = $props.$name
+            if ($val -and ($val -like "*bcd2000_midi.dll")) {
+                $HasMidiReg = $true
+            }
+        }
+    }
+    if ((Test-Path $RegKeyHKLM) -or (Test-Path $ClsidKeyHKLM) -or $HasMidiReg) {
+        if (-not $ElevatedChild) {
+            Write-Host "Solicitando elevacion UAC para desinstalar HKLM y System32..." -ForegroundColor Yellow
+            $Ps64 = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+            $ElevArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Config `"$Config`" -ElevatedChild"
+            Start-Process -FilePath $Ps64 -ArgumentList $ElevArgs -Verb RunAs -Wait | Out-Null
         }
     }
 }
 
-# Limpiar claves HKLM (requiere elevacion UAC si la consola no es Admin)
-Write-Host "[3/3] Verificando y limpiando claves en HKEY_LOCAL_MACHINE..." -ForegroundColor Yellow
-if ((Test-Path $RegKeyHKLM) -or (Test-Path $ClsidKeyHKLM) -or $HasMidiReg) {
-    Write-Host "      Solicitando elevacion UAC para limpiar HKLM (ASIO + Drivers32 MIDI)..." -ForegroundColor Cyan
-    $ElevatedCmd = "reg.exe delete `"HKLM\SOFTWARE\ASIO\Behringer BCD2000 ASIO 64-bit`" /f /reg:64 & reg.exe delete `"HKLM\SOFTWARE\Classes\CLSID\{B2D20000-1397-00BD-A510-000000000064}`" /f /reg:64"
-    if ($MidiDllPath -and (Test-Path $MidiDllPath)) {
-        $ElevatedCmd = "regsvr32.exe /u /s `"$MidiDllPath`" & " + $ElevatedCmd
-    }
-    if ($AsioDllPath -and (Test-Path $AsioDllPath)) {
-        $ElevatedCmd = "regsvr32.exe /u /s `"$AsioDllPath`" & " + $ElevatedCmd
-    }
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/c $ElevatedCmd" -Verb RunAs -WindowStyle Hidden -Wait
-}
-
 if (-not (Test-Path $RegKeyHKLM) -and -not (Test-Path $RegKeyHKCU) -and -not (Test-Path $ClsidKeyHKLM) -and -not (Test-Path $ClsidKeyHKCU)) {
-    Write-Host "[OK] Drivers ASIO y WinMM MIDI desregistrados completamente del Registro." -ForegroundColor Green
+    Write-Host "[OK] Drivers ASIO y WinMM MIDI desregistrados completamente." -ForegroundColor Green
 } else {
-    Write-Warning "El proceso finalizo pero alguna clave permanece en el Registro ($RegKeyHKLM). Asegurese de aceptar la ventana UAC."
+    Write-Warning "Alguna clave permanece en el Registro ($RegKeyHKLM). Asegurese de aceptar UAC."
 }
