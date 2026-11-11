@@ -2,6 +2,24 @@
  * @file hostsample.cpp
  * @brief Steinberg ASIO 2.3 (64-bit) Host Verification Utility for Behringer BCD2000 (Milestone 4)
  *
+ * Behringer BCD2000 64-bit ASIO and MIDI Driver Suite
+ * Copyright (C) 2024-2026 Martin Revert <martinrevert@gmail.com> and contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Verifies:
  *   1. Windows Registry discovery under SOFTWARE\ASIO and HKEY_CLASSES_ROOT\CLSID
  *   2. 64-bit In-Process COM instantiation via CoCreateInstance (IASIO interface)
@@ -308,6 +326,8 @@ int main(int argc, char *argv[]) {
     std::printf("   Target Driver: \"Behringer BCD2000 ASIO 64-bit\"\n");
     std::printf("   Arquitectura : %zu-bit (sizeof(void*) = %zu bytes)\n",
                 sizeof(void *) * 8, sizeof(void *));
+    std::printf("   Copyright (C) 2024-2026 Martin Revert and contributors (GPL-3.0+)\n");
+    std::printf("   This is free software with ABSOLUTELY NO WARRANTY. See LICENSE.\n");
     std::printf("======================================================================\n\n");
 
     // 1. Verify Windows Registry registration

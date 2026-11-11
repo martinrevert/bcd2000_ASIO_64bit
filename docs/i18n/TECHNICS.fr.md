@@ -196,4 +196,23 @@ Toute contribution est la bienvenue : Pull Requests, rapports de bugs, tests sur
 
 ---
 
+## 9. Architecture de Licence et Conformité Juridique
+
+La suite de pilotes Behringer BCD2000 64-bit ASIO and MIDI est distribuée en tant que logiciel libre sous la licence **[GNU General Public License v3 ou ultérieure (GPL-3.0-or-later)](../../LICENSE)**, assortie de l'**Exception de Liaison pour DAWs et Hôtes** (GPLv3 Section 7).
+
+### 9.1. Déclarations Clean-Room de l'ABI ASIO & Exception pour Hôtes
+* **Déclarations ABI Clean-Room :** Les en-têtes dans [`third_party/asio-sdk/common`](../../third_party/asio-sdk/common) (`asio.h`, `iasiodrv.h`) sont des déclarations propres et indépendantes de la spécification COM publique de Steinberg ASIO 2.3. Ils ne contiennent aucun code propriétaire issu du SDK fermé de Steinberg.
+* **Exception pour Hôtes ASIO :** Conformément à la Section 7 de la GPLv3, une permission explicite autorise le chargement dynamique et la liaison de `bcd2000_asio.dll` et `bcd2000_midi.dll` via l'interface COM IASIO et WinMM MME depuis toute application hôte (Mixxx, Ableton Live, FL Studio, REAPER, Traktor) sans imposer de contraintes de licence sur l'application hôte.
+* **Avis de Marque :** ASIO est une marque déposée et un logiciel de Steinberg Media Technologies GmbH.
+
+### 9.2. Références Externes et Bibliothèques Système
+* **Rétro-ingénierie Linux ALSA (`snd-bcd2000`) :** Le handshake d'initialisation de 52 octets (`kInitSequence`) est issu de l'analyse du pilote ALSA développé par Mario Kicherer (`GPL-2.0`). Les constantes de protocole et données fonctionnelles sont utilisées à des fins d'interopérabilité technique.
+* **Mappages Sécurisés pour Mixxx :** Les scripts dans [`presets/mixxx`](../../presets/mixxx) s'appuient sur le mappage initial de Golzo et de l'équipe Mixxx (`GPL-2.0-or-later`), entièrement compatible avec la GPL-3.0-or-later.
+* **Exception des Bibliothèques Système Windows :** Le pilote repose sur les composants natifs de Windows (`WinUSB.sys`), le SDK Windows et le runtime statique de MSVC (`/MT`). Au titre de la Section 1 de la GPLv3, ces composants sont qualifiés de Bibliothèques Système, autorisant la distribution des binaires x64.
+* **Crédits :** La liste complète des auteurs et contributions est tenue à jour dans [`AUTHORS`](../../AUTHORS).
+
+---
+
+---
+
 [![EN](flags/gb.svg) English](../../TECHNICS.md) | [![ES](flags/es.svg) Español](TECHNICS.es.md) | [![PT](flags/br.svg) Português](TECHNICS.pt.md) | [![DE](flags/de.svg) Deutsch](TECHNICS.de.md) | [![FR](flags/fr.svg) **Français**](TECHNICS.fr.md) | [![ZH](flags/cn.svg) 中文](TECHNICS.zh.md) | [![JA](flags/jp.svg) 日本語](TECHNICS.ja.md)

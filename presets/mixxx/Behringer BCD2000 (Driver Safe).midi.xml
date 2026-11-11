@@ -1,4 +1,11 @@
 <?xml version='1.0' encoding='utf-8'?>
+<!--
+ Behringer BCD2000 Safe MIDI Mapping for Mixxx
+ Based on the original Mixxx BCD2000 mapping by Golzo and the Mixxx Development Team.
+ Copyright (C) 2011-2024 Golzo & The Mixxx Development Team
+ Copyright (C) 2024-2026 Martin Revert <martinrevert@gmail.com> and contributors
+ SPDX-License-Identifier: GPL-3.0-or-later
+-->
 <MixxxMIDIPreset mixxxVersion="2.4.0+" schemaVersion="1">
     <info>
         <name>Behringer BCD2000 (Driver Safe)</name>

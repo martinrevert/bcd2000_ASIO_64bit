@@ -60,6 +60,11 @@ Any proposed modification that violates any of the following invariants is consi
 * All device constants (`VID 0x1397`, `PID 0x00BD`), the 52-byte initialization handshake (`kInitSequence`), named pipe definitions, `MidiRunningStatusParser`, and overlapped frame helpers **must remain centralized in [`src/common/bcd2000_usb_protocol.h`](src/common/bcd2000_usb_protocol.h)**.
 * Do not duplicate hardware packet geometry or handshake sequences across multiple source files.
 
+### 8. Strict Open-Source License Invariance (`GPL-3.0-or-later`)
+* The entire repository is licensed under the **GNU General Public License v3 or later (`GPL-3.0-or-later`)** with the **ASIO & Host Application Linking Exception** (Section 7).
+* All source files (`.cpp`, `.h`, `.def`, `.bat`, `.ps1`, `.nsi`, `.js`, `.xml`, `CMakeLists.txt`) must maintain the standard SPDX identifier (`SPDX-License-Identifier: GPL-3.0-or-later`) and canonical copyright notice.
+* Clean-room ASIO headers in [`third_party/asio-sdk`](third_party/asio-sdk) must never be replaced with proprietary Steinberg SDK code that restricts open redistribution.
+
 ---
 
 ## 3. Strict Prohibitions (NEVER Do This)

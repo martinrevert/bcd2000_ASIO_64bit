@@ -196,4 +196,23 @@ Pull Requests, Fehlerberichte, Hardware-Tests mit verschiedenen USB-Controllern 
 
 ---
 
+## 9. Lizenzarchitektur & Rechtliche Konformität
+
+Die Behringer BCD2000 64-bit ASIO and MIDI Driver Suite wird als freie Software unter der **[GNU General Public License v3 oder neuer (GPL-3.0-or-later)](../../LICENSE)** vertrieben, ergänzt um die **ASIO & Host-Verknüpfungsausnahme** (GPLv3 Abschnitt 7).
+
+### 9.1. Clean-Room ASIO COM ABI & Host-Verknüpfungsausnahme
+* **Clean-Room ABI-Deklarationen:** Die Header in [`third_party/asio-sdk/common`](../../third_party/asio-sdk/common) (`asio.h`, `iasiodrv.h`) sind unabhängige Clean-Room-Deklarationen der öffentlichen Steinberg ASIO 2.3 COM ABI. Sie enthalten keinen proprietären Code aus Steinbergs geschlossenem SDK.
+* **ASIO Host-Ausnahme:** Gemäß GPLv3 Abschnitt 7 wird Anwendern und DAW-Entwicklern ausdrücklich das Recht eingeräumt, `bcd2000_asio.dll` und `bcd2000_midi.dll` über die IASIO COM-Schnittstelle und WinMM MME dynamisch mit beliebiger Host-Software (Mixxx, Ableton Live, FL Studio, REAPER, Traktor) zu verknüpfen und zu laden, ohne der Host-Anwendung Lizenzverpflichtungen aufzuerlegen.
+* **Markenhinweis:** ASIO ist ein eingetragenes Warenzeichen und Software der Steinberg Media Technologies GmbH.
+
+### 9.2. Drittanbieter-Referenzen & Systembibliotheken
+* **Linux ALSA Reverse-Engineering (`snd-bcd2000`):** Das 52-Byte-Initialisierungs-Handshake (`kInitSequence`) basiert auf der Analyse des Linux-Kernel-ALSA-Treibers von Mario Kicherer (`GPL-2.0`). Hardware-Protokollkonstanten werden zur technischen Interoperabilität verwendet.
+* **Mixxx Safe-Mapping-Presets:** Die Presets in [`presets/mixxx`](../../presets/mixxx) basieren auf dem ursprünglichen Mixxx BCD2000-Mapping von Golzo und dem Mixxx Development Team (`GPL-2.0-or-later`) und sind vollständig mit GPL-3.0-or-later kompatibel.
+* **Windows System Libraries-Ausnahme:** Der Treiber verwendet Windows-Inbox-Treiber (`WinUSB.sys`), Windows SDK-Header und die statische MSVC-Laufzeitumgebung (`/MT`). Gemäß Abschnitt 1 der GNU GPLv3 qualifizieren sich diese als Systembibliotheken, was die Weitergabe kompilierter x64-Binärdateien gestattet.
+* **Danksagungen & Autoren:** Vollständige Angaben finden sich in [`AUTHORS`](../../AUTHORS).
+
+---
+
+---
+
 [![EN](flags/gb.svg) English](../../TECHNICS.md) | [![ES](flags/es.svg) Español](TECHNICS.es.md) | [![PT](flags/br.svg) Português](TECHNICS.pt.md) | [![DE](flags/de.svg) **Deutsch**](TECHNICS.de.md) | [![FR](flags/fr.svg) Français](TECHNICS.fr.md) | [![ZH](flags/cn.svg) 中文](TECHNICS.zh.md) | [![JA](flags/jp.svg) 日本語](TECHNICS.ja.md)

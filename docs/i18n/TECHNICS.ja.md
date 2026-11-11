@@ -196,4 +196,23 @@ cmake --build build --config Release --target bcd2000_installer
 
 ---
 
+## 9. ライセンス設計と法的適合性
+
+Behringer BCD2000 64-bit ASIO and MIDI Driver Suite は、**[GNU General Public License v3 or later (GPL-3.0-or-later)](../../LICENSE)** に基づき、**ASIO およびホストアプリケーションリンク例外条項**（GPLv3 第 7 条）を適用した自由ソフトウェアとして提供されます。
+
+### 9.1. クリーンルーム ASIO COM ABI 定義とホストリンク例外
+* **クリーンルーム ABI 定義：** [`third_party/asio-sdk/common`](../../third_party/asio-sdk/common) 配下のヘッダー（`asio.h`, `iasiodrv.h`）は、Steinberg ASIO 2.3 の公開 COM 仕様に基づいて独自に作成されたクリーンルーム宣言です。Steinberg 社の非公開 SDK ソースコードは一切含まれていません。
+* **ASIO ホスト例外条項：** GPLv3 第 7 条に基づき、任意のホストアプリケーション（Mixxx、Ableton Live、FL Studio、REAPER、Traktor など）から IASIO COM インターフェースや WinMM MME API を経由して `bcd2000_asio.dll` および `bcd2000_midi.dll` を動的リンク・ロードする権利が明示的に認められており、ホストソフトウェア側に派生ライセンス義務を課すことはありません。
+* **商標について：** ASIO は Steinberg Media Technologies GmbH の登録商標およびソフトウェアです。
+
+### 9.2. サードパーティ参照と Windows システムライブラリ例外
+* **Linux ALSA リバースエンジニアリング (`snd-bcd2000`)：** 52 バイトの USB 初期化ハンドシェイクシーケンス（`kInitSequence`）は、Mario Kicherer 氏による Linux カーネル ALSA ドライバ（`GPL-2.0`）の解析に基づいています。ハードウェアプロトコル定数は相互運用のために利用されています。
+* **Mixxx 安全マッピングプリセット：** [`presets/mixxx`](../../presets/mixxx) のプリセットは、Golzo 氏および Mixxx 開発チームによるオリジナルマッピング（`GPL-2.0-or-later`）をベースにしており、GPL-3.0-or-later と完全に両立可能です。
+* **Windows システムライブラリ例外：** 本ドライバは Windows 標準インボックスドライバ（`WinUSB.sys`）、Windows SDK ヘッダー、および静的リンク MSVC ランタイム（`/MT`）に依存します。GNU GPLv3 第 1 条の規定に基づき、これらはシステムライブラリ（System Libraries）として分類され、コンパイル済み x64 バイナリの合法的な配布が認められています。
+* **謝辞：** 著作権保持者および貢献者の詳細は [`AUTHORS`](../../AUTHORS) に記載されています。
+
+---
+
+---
+
 [![EN](flags/gb.svg) English](../../TECHNICS.md) | [![ES](flags/es.svg) Español](TECHNICS.es.md) | [![PT](flags/br.svg) Português](TECHNICS.pt.md) | [![DE](flags/de.svg) Deutsch](TECHNICS.de.md) | [![FR](flags/fr.svg) Français](TECHNICS.fr.md) | [![ZH](flags/cn.svg) 中文](TECHNICS.zh.md) | [![JA](flags/jp.svg) **日本語**](TECHNICS.ja.md)

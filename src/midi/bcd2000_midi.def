@@ -1,3 +1,7 @@
+; Behringer BCD2000 64-bit ASIO and MIDI Driver Suite
+; Copyright (C) 2024-2026 Martin Revert <martinrevert@gmail.com> and contributors
+; SPDX-License-Identifier: GPL-3.0-or-later
+
 LIBRARY "bcd2000_midi"
 EXPORTS
     DriverProc

@@ -84,4 +84,15 @@ La respuesta clara es que eso es técnicamente imposible en Windows moderno de 6
 
 ---
 
+## Licencia y Marco Legal
+
+Este proyecto es software libre distribuido bajo la licencia **[GNU General Public License v3 o posterior (GPL-3.0-or-later)](../../LICENSE)** con la **Excepción de Vinculación para Hosts y DAWs** (Sección 7 de GPLv3).
+
+* **Compatibilidad con DAWs y Programas DJ:** Se otorga permiso expreso para vincular y cargar `bcd2000_asio.dll` y `bcd2000_midi.dll` desde cualquier software host de audio (Mixxx, Ableton Live, FL Studio, REAPER, Traktor, etc.) sin importar los términos de licencia del host.
+* **Encabezados ASIO Clean-Room:** Las definiciones de interfaz ASIO incluidas son declaraciones libres e independientes de la ABI pública COM, desarrolladas para interoperabilidad binaria sin contener código privativo del SDK de Steinberg.
+* **Aviso de Marca:** ASIO es una marca registrada y software de Steinberg Media Technologies GmbH.
+* **Autores y Agradecimientos:** Consulta [AUTHORS](../../AUTHORS) para la lista de autores y reconocimientos de ingeniería inversa (incluyendo la investigación pionera de Mario Kicherer en Linux ALSA y el equipo de Mixxx).
+
+---
+
 [![EN](flags/gb.svg) English](../../README.md) | [![ES](flags/es.svg) **Español**](README.es.md) | [![PT](flags/br.svg) Português](README.pt.md) | [![DE](flags/de.svg) Deutsch](README.de.md) | [![FR](flags/fr.svg) Français](README.fr.md) | [![ZH](flags/cn.svg) 中文](README.zh.md) | [![JA](flags/jp.svg) 日本語](README.ja.md)

@@ -84,4 +84,15 @@ Behringer は 2000 年代半ば（Windows XP / Vista 時代）に BCD2000 を発
 
 ---
 
+## ライセンスと法的情報
+
+本プロジェクトは、**[GNU General Public License v3 or later (GPL-3.0-or-later)](../../LICENSE)** に基づき、**ASIO およびホストアプリケーションリンク例外条項**（GPLv3 第 7 条）を追加した自由ソフトウェアとして公開されています。
+
+* **DAW および DJ ソフトウェアとの互換性：** ホスト側のライセンス形態に関わらず、任意の DAW や DJ ソフトウェア（Mixxx、Ableton Live、FL Studio、REAPER、Traktor など）から `bcd2000_asio.dll` および `bcd2000_midi.dll` を動的リンク・ロードすることが明示的に許可されています。
+* **クリーンルーム ASIO ヘッダー：** 本リポジトリに含まれる ASIO インターフェース定義は、公開 COM ABI に基づき独自に作成されたクリーンルーム仕様であり、Steinberg 社の非公開 SDK コードは一切含まれていません。
+* **商標について：** ASIO は Steinberg Media Technologies GmbH の登録商標およびソフトウェアです。
+* **作者と謝辞：** 著作権保持者およびリバースエンジニアリングに関する謝辞（Mario Kicherer 氏による Linux ALSA ドライバ研究や Mixxx コミュニティ）は [AUTHORS](../../AUTHORS) をご覧ください。
+
+---
+
 [![EN](flags/gb.svg) English](../../README.md) | [![ES](flags/es.svg) Español](README.es.md) | [![PT](flags/br.svg) Português](README.pt.md) | [![DE](flags/de.svg) Deutsch](README.de.md) | [![FR](flags/fr.svg) Français](README.fr.md) | [![ZH](flags/cn.svg) 中文](README.zh.md) | [![JA](flags/jp.svg) **日本語**](README.ja.md)

@@ -196,4 +196,23 @@ cmake --build build --config Release --target bcd2000_installer
 
 ---
 
+## 9. 许可证架构与法律合规
+
+Behringer BCD2000 64-bit ASIO and MIDI Driver Suite 采用 **[GNU 通用公共许可证 v3 或更高版本 (GPL-3.0-or-later)](../../LICENSE)** 分发，并附加 **ASIO 及宿主应用程序链接例外条款**（GPLv3 第 7 条）。
+
+### 9.1. 洁净室 (Clean-Room) ASIO COM ABI 与宿主链接例外
+* **洁净室 ABI 定义：** [`third_party/asio-sdk/common`](../../third_party/asio-sdk/common) 下的头文件（`asio.h`, `iasiodrv.h`）是基于公开 Steinberg ASIO 2.3 COM 规范独立编写的洁净室声明，绝不包含 Steinberg 商业闭源 SDK 中的任何专有代码。
+* **ASIO 宿主例外条款：** 根据 GPLv3 第 7 条，明确授予用户和开发者通过 IASIO COM 接口与 WinMM MME API 将 `bcd2000_asio.dll` 和 `bcd2000_midi.dll` 动态加载并链接至任何宿主程序（如 Mixxx、Ableton Live、FL Studio、REAPER、Traktor）的权利，且不向宿主程序强加衍生许可约束。
+* **商标声明：** ASIO 是 Steinberg Media Technologies GmbH 的注册商标与软件。
+
+### 9.2. 第三方参考与操作系统系统库
+* **Linux ALSA 逆向成果 (`snd-bcd2000`)：** 52 字节 USB 握手初始化序列（`kInitSequence`）源自 Mario Kicherer 开发的 Linux 内核 ALSA 驱动（`GPL-2.0`）。硬件协议常量与握手数据用于保障硬件互操作性。
+* **Mixxx 控制器安全映射预设：** [`presets/mixxx`](../../presets/mixxx) 下的映射脚本基于 Golzo 及 Mixxx 开发团队的原版映射（`GPL-2.0-or-later`），与 GPL-3.0-or-later 规范完全兼容。
+* **Windows 系统库例外条款：** 本驱动基于 Windows 官方驱动（`WinUSB.sys`）、Windows SDK 头文件以及静态 MSVC 运行时库（`/MT`）。依据 GNU GPLv3 第 1 条，这些组件符合“系统库”（System Libraries）定义，允许合法分发编译出的 x64 二进制文件。
+* **致谢：** 完整版权与逆向工程致谢请参见 [`AUTHORS`](../../AUTHORS)。
+
+---
+
+---
+
 [![EN](flags/gb.svg) English](../../TECHNICS.md) | [![ES](flags/es.svg) Español](TECHNICS.es.md) | [![PT](flags/br.svg) Português](TECHNICS.pt.md) | [![DE](flags/de.svg) Deutsch](TECHNICS.de.md) | [![FR](flags/fr.svg) Français](TECHNICS.fr.md) | [![ZH](flags/cn.svg) **中文**](TECHNICS.zh.md) | [![JA](flags/jp.svg) 日本語](TECHNICS.ja.md)

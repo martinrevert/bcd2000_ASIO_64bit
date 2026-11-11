@@ -3,6 +3,24 @@
  * @brief Self-contained Windows 10/11 x64 WinUSB driver installer/uninstaller
  *        for the Behringer BCD2000 (VID_1397 & PID_00BD).
  *
+ * Behringer BCD2000 64-bit ASIO and MIDI Driver Suite
+ * Copyright (C) 2024-2026 Martin Revert <martinrevert@gmail.com> and contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Uses Windows inbox winusb.inf + winusb.sys (no external WDK redistributables),
  * builds a SHA-256 .cat catalog via wintrust.dll (CryptCATCDFOpen), signs it
  * with an ephemeral local 2048-bit SHA-256 self-signed certificate installed
@@ -743,6 +761,8 @@ int RunTestCat(const std::wstring &targetDir) {
 } // namespace
 
 int wmain(int argc, wchar_t **argv) {
+    LogInfo(L"Behringer BCD2000 WinUSB Setup - Copyright (C) 2024-2026 Martin Revert and contributors");
+    LogInfo(L"Licensed under GNU GPL v3 or later. This is free software with ABSOLUTELY NO WARRANTY.");
     if (argc >= 2) {
         if (std::wcscmp(argv[1], L"--uninstall") == 0 ||
             std::wcscmp(argv[1], L"/uninstall") == 0) {

@@ -84,4 +84,15 @@ Quer conferir o diagrama de arquitetura, entender como resolvemos o drift de clo
 
 ---
 
+## Licença e Aspectos Jurídicos
+
+Este projeto é software livre distribuído sob os termos da **[GNU General Public License v3 ou posterior (GPL-3.0-or-later)](../../LICENSE)** com a **Exceção de Vinculação para DAWs e Hosts** (Seção 7 da GPLv3).
+
+* **Compatibilidade com DAWs e Aplicativos DJ:** Concede-se permissão expressa para vincular e carregar `bcd2000_asio.dll` e `bcd2000_midi.dll` a partir de qualquer software host de áudio (Mixxx, Ableton Live, FL Studio, REAPER, Traktor, etc.), independentemente dos termos de licença do aplicativo anfitrião.
+* **Cabeçalhos ASIO Clean-Room:** As definições de interface ASIO são declarações limpas e independentes da ABI pública COM, desenvolvidas para interoperabilidade binária sem qualquer código proprietário do SDK da Steinberg.
+* **Aviso de Marca:** ASIO é marca registrada e software da Steinberg Media Technologies GmbH.
+* **Autores e Créditos:** Consulte [AUTHORS](../../AUTHORS) para os direitos autorais e agradecimentos de engenharia reversa (incluindo o trabalho pioneiro de Mario Kicherer no Linux ALSA e a equipe do Mixxx).
+
+---
+
 [![EN](flags/gb.svg) English](../../README.md) | [![ES](flags/es.svg) Español](README.es.md) | [![PT](flags/br.svg) **Português**](README.pt.md) | [![DE](flags/de.svg) Deutsch](README.de.md) | [![FR](flags/fr.svg) Français](README.fr.md) | [![ZH](flags/cn.svg) 中文](README.zh.md) | [![JA](flags/jp.svg) 日本語](README.ja.md)

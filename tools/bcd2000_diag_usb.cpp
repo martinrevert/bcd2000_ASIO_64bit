@@ -1,6 +1,24 @@
 /**
  * @file bcd2000_diag_usb.cpp
  * @brief Behringer BCD2000 USB Detection, Enumeration, Handshake, and Live Link Diagnostic Tool
+ *
+ * Behringer BCD2000 64-bit ASIO and MIDI Driver Suite
+ * Copyright (C) 2024-2026 Martin Revert <martinrevert@gmail.com> and contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
  * 
  * Part of Milestone 1 ("Detección y Enlace USB") for Behringer BCD2000 64-bit ASIO Driver.
  * Target Hardware: Behringer BCD2000 DJ Controller (VID: 0x1397, PID: 0x00BD)
@@ -435,6 +453,8 @@ int RunDiagnostic(const GUID* customGuid) {
     std::cout << "======================================================================\n";
     std::cout << "   Behringer BCD2000 USB Link & Handshake Diagnostic (Hito 1 - x64)   \n";
     std::cout << "   Target: VID 0x1397, PID 0x00BD | Driver: WinUSB                    \n";
+    std::cout << "   Copyright (C) 2024-2026 Martin Revert and contributors (GPL-3.0+)  \n";
+    std::cout << "   This is free software with ABSOLUTELY NO WARRANTY.                 \n";
     std::cout << "======================================================================\n\n";
 
     BCD2000DeviceInfo devInfo{};

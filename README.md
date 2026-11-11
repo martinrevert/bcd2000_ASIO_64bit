@@ -84,3 +84,18 @@ Want to see the internal architecture diagram, learn how we solved USB 1.1 cryst
 
 👉 Read the full engineering specification in **[TECHNICS.md](TECHNICS.md)**.
 🤖 AI agents and automated coding assistants must follow **[AGENTS.md](AGENTS.md)**.
+
+---
+
+## License & Legal
+
+This project is free software licensed under the **[GNU General Public License v3 or later (GPL-3.0-or-later)](LICENSE)** with the **ASIO & Host Application Linking Exception** (Section 7).
+
+* **DAW & Host Compatibility:** You are explicitly granted permission to link and load `bcd2000_asio.dll` and `bcd2000_midi.dll` with any digital audio workstation or DJ software (such as Mixxx, Ableton Live, FL Studio, REAPER, Traktor) regardless of the host application's licensing terms.
+* **Clean-Room ASIO Headers:** The ASIO header files in this repository are independent clean-room ABI definitions developed for binary interoperability and contain no proprietary Steinberg SDK code.
+* **Steinberg Disclaimer:** ASIO is a registered trademark and software of Steinberg Media Technologies GmbH.
+* **Credits & Authors:** See [AUTHORS](AUTHORS) for copyright holders and third-party acknowledgments (including Mario Kicherer's Linux ALSA research and the Mixxx mapping team).
+
+---
+
+[![EN](docs/i18n/flags/gb.svg) **English**](README.md) | [![ES](docs/i18n/flags/es.svg) Español](docs/i18n/README.es.md) | [![PT](docs/i18n/flags/br.svg) Português](docs/i18n/README.pt.md) | [![DE](docs/i18n/flags/de.svg) Deutsch](docs/i18n/README.de.md) | [![FR](docs/i18n/flags/fr.svg) Français](docs/i18n/README.fr.md) | [![ZH](docs/i18n/flags/cn.svg) 中文](docs/i18n/README.zh.md) | [![JA](docs/i18n/flags/jp.svg) 日本語](docs/i18n/README.ja.md)

@@ -197,4 +197,23 @@ Contribuições são calorosamente bem-vindas: Pull Requests, relatórios de bug
 
 ---
 
+## 9. Arquitetura de Licenciamento e Conformidade Jurídica
+
+O Behringer BCD2000 64-bit ASIO and MIDI Driver Suite é distribuído como Software Livre sob a **[GNU General Public License v3 ou posterior (GPL-3.0-or-later)](../../LICENSE)**, acrescida da **Exceção de Vinculação para Hosts e DAWs** (Seção 7 da GPLv3).
+
+### 9.1. Definições Limpas da ABI ASIO e Exceção para Hosts
+* **Definições ABI Clean-Room:** Os cabeçalhos em [`third_party/asio-sdk/common`](../../third_party/asio-sdk/common) (`asio.h`, `iasiodrv.h`) são declarações limpas e independentes da especificação pública COM para Steinberg ASIO 2.3. Não incorporam nem redistribuem código proprietário do SDK da Steinberg.
+* **Exceção para Hosts ASIO:** Conforme a Seção 7 da GPLv3, é concedida permissão explícita para vincular dinamicamente e carregar `bcd2000_asio.dll` e `bcd2000_midi.dll` via interface COM IASIO e WinMM MME a partir de qualquer software anfitrião (Mixxx, Ableton Live, FL Studio, REAPER, Traktor, etc.) sem impor restrições ou licenças sobre a aplicação hospedeira.
+* **Aviso de Marca:** ASIO é marca registrada e software da Steinberg Media Technologies GmbH.
+
+### 9.2. Referências de Terceiros e Bibliotecas do Sistema
+* **Engenharia Reversa no Linux ALSA (`snd-bcd2000`):** O handshake de 52 bytes (`kInitSequence`) foi obtido a partir da análise do driver ALSA de Mario Kicherer (`GPL-2.0`). Parâmetros de protocolo e sequências de hardware são usados para fins de interoperabilidade técnica.
+* **Mapeamento Seguro do Mixxx:** Os scripts e presets em [`presets/mixxx`](../../presets/mixxx) são baseados no mapeamento original de Golzo e do Mixxx Development Team (`GPL-2.0-or-later`), plenamente compatíveis com a GPL-3.0-or-later.
+* **Exceção de System Libraries do Windows:** O driver depende de componentes do Windows (`WinUSB.sys`), do Windows SDK e da biblioteca estática de tempo de execução do MSVC (`/MT`). Sob a Seção 1 da GPLv3, qualificam-se como Bibliotecas do Sistema, autorizando a distribuição de binários compilados x64.
+* **Créditos:** A lista completa de autores e créditos de engenharia reversa encontra-se em [`AUTHORS`](../../AUTHORS).
+
+---
+
+---
+
 [![EN](flags/gb.svg) English](../../TECHNICS.md) | [![ES](flags/es.svg) Español](TECHNICS.es.md) | [![PT](flags/br.svg) **Português**](TECHNICS.pt.md) | [![DE](flags/de.svg) Deutsch](TECHNICS.de.md) | [![FR](flags/fr.svg) Français](TECHNICS.fr.md) | [![ZH](flags/cn.svg) 中文](TECHNICS.zh.md) | [![JA](flags/jp.svg) 日本語](TECHNICS.ja.md)

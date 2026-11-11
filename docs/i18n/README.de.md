@@ -84,4 +84,15 @@ Du möchtest das Architekturdiagramm sehen, erfahren wie wir USB-1.1-Takt-Drift 
 
 ---
 
+## Lizenz & Rechtliche Hinweise
+
+Dieses Projekt ist freie Software unter der **[GNU General Public License v3 oder neuer (GPL-3.0-or-later)](../../LICENSE)** mit der **ASIO & Host-Verknüpfungsausnahme** (GPLv3 Abschnitt 7).
+
+* **Kompatibilität mit DAWs und DJ-Software:** Es wird ausdrücklich gestattet, `bcd2000_asio.dll` und `bcd2000_midi.dll` dynamisch über COM und WinMM mit beliebiger Audio-Host-Software (wie Mixxx, Ableton Live, FL Studio, REAPER, Traktor) zu verknüpfen und zu laden, unabhängig von den Lizenzbedingungen der Host-Anwendung.
+* **Clean-Room ASIO-Header:** Die enthaltenen ASIO-Header sind unabhängige Clean-Room-Deklarationen der öffentlichen COM-Spezifikation für binäre Interoperabilität und enthalten keinen proprietären Code aus Steinbergs geschlossenem SDK.
+* **Markenhinweis:** ASIO ist ein eingetragenes Warenzeichen und Software der Steinberg Media Technologies GmbH.
+* **Autoren & Danksagung:** Siehe [AUTHORS](../../AUTHORS) für Copyright-Inhaber und Danksagungen für Reverse-Engineering (einschließlich Mario Kicherers Linux-ALSA-Forschung und des Mixxx-Teams).
+
+---
+
 [![EN](flags/gb.svg) English](../../README.md) | [![ES](flags/es.svg) Español](README.es.md) | [![PT](flags/br.svg) Português](README.pt.md) | [![DE](flags/de.svg) **Deutsch**](README.de.md) | [![FR](flags/fr.svg) Français](README.fr.md) | [![ZH](flags/cn.svg) 中文](README.zh.md) | [![JA](flags/jp.svg) 日本語](README.ja.md)

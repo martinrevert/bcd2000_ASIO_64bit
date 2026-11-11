@@ -1,0 +1,17 @@
+# Authors & Contributors
+
+## Primary Author and Copyright Holder
+* **Martin Revert** <martinrevert@gmail.com>
+  - Architecture, design, and implementation of the native 64-bit user-mode ASIO driver (`bcd2000_asio.dll`), 64-bit WinMM MIDI driver (`bcd2000_midi.dll`), zero-Zadig WinUSB setup utility (`bcd2000_winusb_setup.exe`), diagnostic test suite, and NSIS installer bundle.
+
+## Acknowledgments & Prior Work
+* **Mario Kicherer** <dev@kicherer.org>
+  - Author of the Linux kernel ALSA driver (`sound/usb/bcd2000/bcd2000.c`, licensed under GPL-2.0), whose foundational reverse-engineering work uncovered the 52-byte hardware initialization handshake sequence (`kInitSequence`).
+* **Golzo & The Mixxx Development Team**
+  - Authors of the original Behringer BCD2000 Mixxx controller mapping (`GPL-2.0-or-later`), which served as the operational foundation for the safe preset scripts (`Behringer-BCD2000-safe-scripts.js`).
+
+## Trademark Disclaimers
+* **ASIO** is a registered trademark and software of Steinberg Media Technologies GmbH.
+* **Behringer** and **BCD2000** are trademarks of Music Tribe Global Brands Ltd.
+* **Windows** is a registered trademark of Microsoft Corporation.
+

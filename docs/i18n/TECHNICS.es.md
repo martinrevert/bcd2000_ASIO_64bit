@@ -203,4 +203,23 @@ Los binarios compilados se generan en `build\Release\` (o `build\RelWithDebInfo\
 
 ---
 
+## 9. Arquitectura de Licenciamiento y Cumplimiento Legal
+
+La suite de controladores Behringer BCD2000 64-bit ASIO y MIDI se distribuye como Software Libre bajo los términos de la **[GNU General Public License v3 o posterior (GPL-3.0-or-later)](../../LICENSE)**, complementada con la **Excepción de Vinculación para Hosts y DAWs** (Sección 7 de GPLv3).
+
+### 9.1. Definiciones Clean-Room de la ABI ASIO y Excepción para Hosts
+* **Definiciones de Interfaz Limpias:** Los encabezados en [`third_party/asio-sdk/common`](../../third_party/asio-sdk/common) (`asio.h`, `iasiodrv.h`) son declaraciones independientes desarrolladas en modalidad *clean-room* a partir de la especificación pública de COM para Steinberg ASIO 2.3. No incorporan, copian ni distribuyen código fuente privativo del SDK comercial de Steinberg.
+* **Excepción para Hosts ASIO:** Conforme a la Sección 7 de GPLv3, se otorga permiso explícito para enlazar y cargar `bcd2000_asio.dll` y `bcd2000_midi.dll` mediante la interfaz COM IASIO y la API WinMM MME desde cualquier aplicación anfitriona (Mixxx, Ableton Live, FL Studio, REAPER, Traktor, etc.) sin imponer obligaciones de licenciamiento sobre el software anfitrión.
+* **Aviso de Marca:** ASIO es una marca registrada y software de Steinberg Media Technologies GmbH.
+
+### 9.2. Referencias Externas y Bibliotecas del Sistema
+* **Ingeniería Inversa de Linux ALSA (`snd-bcd2000`):** La secuencia de 52 bytes de inicialización USB (`kInitSequence`) se derivó del análisis del controlador ALSA desarrollado por Mario Kicherer (`GPL-2.0`). Los parámetros de protocolo y datos funcionales se implementan estrictamente para interoperabilidad de hardware.
+* **Mapeos Seguros de Mixxx:** Los presets ubicados en [`presets/mixxx`](../../presets/mixxx) provienen del mapeo comunitario original de Mixxx creado por Golzo y el equipo de desarrollo de Mixxx (`GPL-2.0-or-later`), plenamente compatible con GPL-3.0-or-later.
+* **Excepción de System Libraries de Windows:** El controlador depende de controladores inbox de Microsoft (`WinUSB.sys`), encabezados del Windows SDK y el runtime estático de MSVC (`/MT`). Según la Sección 1 de la GPLv3, estos elementos califican como Bibliotecas del Sistema, permitiendo la distribución legal de binarios compilados x64.
+* **Créditos:** La lista completa de autores y reconocimientos se documenta en [`AUTHORS`](../../AUTHORS).
+
+---
+
+---
+
 [![EN](flags/gb.svg) English](../../TECHNICS.md) | [![ES](flags/es.svg) **Español**](TECHNICS.es.md) | [![PT](flags/br.svg) Português](TECHNICS.pt.md) | [![DE](flags/de.svg) Deutsch](TECHNICS.de.md) | [![FR](flags/fr.svg) Français](TECHNICS.fr.md) | [![ZH](flags/cn.svg) 中文](TECHNICS.zh.md) | [![JA](flags/jp.svg) 日本語](TECHNICS.ja.md)

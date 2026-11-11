@@ -2,6 +2,24 @@
  * @file dllmain_registry.cpp
  * @brief In-Process 64-bit COM Server Entry Points, Class Factory & Windows Registry Installer
  *        for Behringer BCD2000 ASIO 64-bit (CLSID {B2D20000-1397-00BD-A510-000000000064}).
+ *
+ * Behringer BCD2000 64-bit ASIO and MIDI Driver Suite
+ * Copyright (C) 2024-2026 Martin Revert <martinrevert@gmail.com> and contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #ifndef WIN32_LEAN_AND_MEAN

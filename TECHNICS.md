@@ -203,4 +203,23 @@ We warmly welcome pull requests, bug reports, hardware testing on different Wind
 
 ---
 
+## 9. Licensing Architecture & Legal Compliance
+
+The Behringer BCD2000 64-bit ASIO and MIDI Driver Suite is distributed as Free and Open Source Software under the terms of the **[GNU General Public License v3 or later (GPL-3.0-or-later)](LICENSE)**, augmented with the **ASIO & Host Application Linking Exception** (GPLv3 Section 7).
+
+### 9.1. Clean-Room ASIO COM ABI & Host Linking Exception
+* **Clean-Room ABI Definitions:** The headers in [`third_party/asio-sdk/common`](third_party/asio-sdk/common) (`asio.h`, `iasiodrv.h`) are independent clean-room declarations of the public COM ABI for Steinberg ASIO 2.3. They do not incorporate, copy, or distribute proprietary files from Steinberg's closed SDK.
+* **ASIO Host Exception:** An explicit permission under GPLv3 Section 7 grants users and developers the right to dynamically link and load `bcd2000_asio.dll` and `bcd2000_midi.dll` via the IASIO COM interface and WinMM MME driver interface from any host application (such as Mixxx, Ableton Live, FL Studio, REAPER, Traktor) without imposing license obligations on the host software.
+* **Trademark:** ASIO is a registered trademark and software of Steinberg Media Technologies GmbH.
+
+### 9.2. Third-Party References & System Libraries
+* **Linux ALSA Reverse-Engineering (`snd-bcd2000`):** The 52-byte USB handshake sequence (`kInitSequence`) was derived from the Linux kernel ALSA driver authored by Mario Kicherer (`GPL-2.0`). Hardware protocol constants and functional handshake data are utilized for interoperability.
+* **Mixxx Safe Mapping Presets:** The controller mapping scripts in [`presets/mixxx`](presets/mixxx) are based on the original Mixxx BCD2000 preset by Golzo and the Mixxx Development Team (`GPL-2.0-or-later`), cleanly compatible with GPL-3.0-or-later.
+* **Windows System Libraries Exception:** The driver relies on Microsoft Windows inbox drivers (`WinUSB.sys`), Windows SDK headers, and the statically linked MSVC runtime (`/MT`). Under Section 1 of the GNU GPLv3, these components qualify as System Libraries, permitting distribution of compiled x64 binaries without licensing encumbrance.
+* **Credits:** Full authorship and reverse-engineering credits are maintained in [`AUTHORS`](AUTHORS).
+
+---
+
+---
+
 [![EN](docs/i18n/flags/gb.svg) **English**](TECHNICS.md) | [![ES](docs/i18n/flags/es.svg) Español](docs/i18n/TECHNICS.es.md) | [![PT](docs/i18n/flags/br.svg) Português](docs/i18n/TECHNICS.pt.md) | [![DE](docs/i18n/flags/de.svg) Deutsch](docs/i18n/TECHNICS.de.md) | [![FR](docs/i18n/flags/fr.svg) Français](docs/i18n/TECHNICS.fr.md) | [![ZH](docs/i18n/flags/cn.svg) 中文](docs/i18n/TECHNICS.zh.md) | [![JA](docs/i18n/flags/jp.svg) 日本語](docs/i18n/TECHNICS.ja.md)
