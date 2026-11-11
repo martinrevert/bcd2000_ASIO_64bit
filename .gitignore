@@ -1,7 +1,8 @@
-# Build directories
+# Build & local tools directories
 build/
 bin/
 out/
+.tools/
 
 # Visual Studio / MSVC artifacts
 .vs/

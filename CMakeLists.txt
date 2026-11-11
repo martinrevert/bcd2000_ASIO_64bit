@@ -127,6 +127,19 @@ target_link_libraries(hostsample_midi
         winmm
 )
 
+# Milestone 5: WinUSB INF/Catalog Signer & Driver Installer Helper (bcd2000_winusb_setup.exe)
+add_executable(bcd2000_winusb_setup
+    tools/bcd2000_winusb_setup.cpp
+)
+
+target_link_libraries(bcd2000_winusb_setup
+    PRIVATE
+        crypt32
+        wintrust
+        setupapi
+        newdev
+)
+
 # Copy hostsample.exe to third_party/asio-sdk/host/pc/hostsample.exe to match ROADMAP_VERIFICATION.md
 add_custom_command(TARGET hostsample POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -136,7 +149,7 @@ add_custom_command(TARGET hostsample POST_BUILD
 )
 
 # Set standard output directories matching verification roadmap
-set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio bcd2000_asio hostsample bcd2000_midi hostsample_midi PROPERTIES
+set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio bcd2000_asio hostsample bcd2000_midi hostsample_midi bcd2000_winusb_setup PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
@@ -146,3 +159,44 @@ set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio bcd2
     LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
     LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/RelWithDebInfo"
 )
+
+# Milestone 5: Single-EXE NSIS Installer (Behringer_BCD2000_Setup_x64.exe)
+find_program(MAKENSIS_EXECUTABLE
+    NAMES makensis
+    PATHS
+        "${CMAKE_SOURCE_DIR}/.tools/nsis/nsis-3.13/Bin"
+        "$ENV{ProgramFiles}/NSIS/Bin"
+        "$ENV{ProgramFiles\(x86\)}/NSIS/Bin"
+        "$ENV{ProgramFiles}/NSIS"
+        "$ENV{ProgramFiles\(x86\)}/NSIS"
+    NO_DEFAULT_PATH
+)
+if(NOT MAKENSIS_EXECUTABLE)
+    find_program(MAKENSIS_EXECUTABLE NAMES makensis)
+endif()
+
+if(MAKENSIS_EXECUTABLE)
+    message(STATUS "[NSIS] Found makensis: ${MAKENSIS_EXECUTABLE}")
+    add_custom_target(bcd2000_installer
+        COMMAND "${MAKENSIS_EXECUTABLE}"
+            /V3
+            /INPUTCHARSET UTF8
+            "/DREPO_DIR=${CMAKE_SOURCE_DIR}"
+            "/DBUILD_BIN_DIR=${CMAKE_BINARY_DIR}/$<CONFIG>"
+            "/DOUT_FILE=${CMAKE_BINARY_DIR}/$<CONFIG>/Behringer_BCD2000_Setup_x64.exe"
+            "${CMAKE_SOURCE_DIR}/installer/bcd2000_setup.nsi"
+        DEPENDS
+            bcd2000_asio
+            bcd2000_midi
+            bcd2000_winusb_setup
+            bcd2000_diag_usb
+            bcd2000_diag_midi
+            bcd2000_diag_audio
+            hostsample
+            hostsample_midi
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/installer"
+        COMMENT "Building single-EXE NSIS installer Behringer_BCD2000_Setup_x64.exe"
+    )
+else()
+    message(STATUS "[NSIS] makensis not found; bcd2000_installer target disabled.")
+endif()
