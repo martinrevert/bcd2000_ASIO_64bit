@@ -186,6 +186,8 @@ find_program(MAKENSIS_EXECUTABLE
     NAMES makensis
     PATHS
         "${CMAKE_SOURCE_DIR}/.tools/nsis/nsis-3.13/Bin"
+        "$ENV{NSISDIR}/Bin"
+        "$ENV{NSISDIR}"
         "$ENV{ProgramFiles}/NSIS/Bin"
         "$ENV{ProgramFiles\(x86\)}/NSIS/Bin"
         "$ENV{ProgramFiles}/NSIS"

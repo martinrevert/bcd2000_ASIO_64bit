@@ -25,6 +25,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup NSIS compiler
+        uses: nsis-dev/setup-nsis@v1
+
+      - name: Verify NSIS compiler
+        shell: pwsh
+        run: |
+          makensis /VERSION
+
       - name: Check for existing tags
         id: check_tags
         shell: pwsh
@@ -39,7 +47,7 @@ jobs:
             echo "has_tags=true" >> $env:GITHUB_OUTPUT
           }
 
-      - name: Calculate initial version tag (v2.0.0)
+      - name: Calculate initial version tag (v2.0.0, dry run)
         if: steps.check_tags.outputs.has_tags == 'false' && github.event.inputs.bump == ''
         id: tag_version_init
         uses: mathieudutour/github-tag-action@v7
@@ -48,8 +56,9 @@ jobs:
           custom_tag: "2.0.0"
           tag_prefix: "v"
           release_branches: "main"
+          dry_run: true
 
-      - name: Calculate bumped version tag
+      - name: Calculate bumped version tag (dry run)
         if: steps.check_tags.outputs.has_tags == 'true' || github.event.inputs.bump != ''
         id: tag_version_bump
         uses: mathieudutour/github-tag-action@v7
@@ -58,6 +67,7 @@ jobs:
           default_bump: ${{ github.event.inputs.bump != '' && github.event.inputs.bump || 'patch' }}
           tag_prefix: "v"
           release_branches: "main"
+          dry_run: true
 
       - name: Resolve target version
         id: resolve_version
@@ -134,6 +144,16 @@ jobs:
           Write-Host "=== Generated SHA256SUMS.txt ==="
           Get-Content "SHA256SUMS.txt"
 
+      - name: Push Git Tag
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.resolve_version.outputs.tag }}"
+          Write-Host "Creating and pushing Git tag: $tag"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a $tag -m "Release $tag"
+          git push origin $tag
+
       - name: Publish Official GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -148,4 +168,3 @@ jobs:
             SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
