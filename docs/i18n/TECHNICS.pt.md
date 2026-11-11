@@ -36,56 +36,56 @@ Em vez de escrever um driver `.sys` em modo kernel, este projeto implementa uma 
 
 ```mermaid
 flowchart TB
-    subgraph HOST["Aplicações Host 64-bit (Mixxx, Ableton Live, REAPER, Traktor)"]
-        DAW_AUDIO["Cliente Host ASIO (IASIO COM)"]
-        DAW_MIDI["Cliente WinMM MME MIDI (midiIn / midiOut)"]
+    subgraph HOST["Aplicações Host 64-bit (Softwares DAW / DJ)"]
+        DAW_AUDIO["Cliente Host ASIO<br/>(Interface COM IASIO)"]
+        DAW_MIDI["Cliente WinMM MIDI<br/>(midiIn / midiOut MME)"]
     end
 
     subgraph USERMODE["Camada Driver User-Mode 64-bit (C++17 /MT)"]
-        subgraph ASIO_DLL["bcd2000_asio.dll (Servidor COM In-Proc)"]
-            IASIO_API["Bcd2000AsioDriver (IASIO)<br/>4 In / 4 Out · ASIOSTInt16LSB · 64..4096"]
-            RING["Ring Buffer Intercalado de 32.768 Frames"]
+        subgraph ASIO_BOX["bcd2000_asio.dll (Servidor COM In-Proc)"]
+            IASIO_API["Bcd2000AsioDriver (Classe IASIO)<br/>4 In / 4 Out · S16_LE · 64..4096 Amostras"]
+            RING["Ring Buffer Intercalado de 32768 Frames"]
             ASIO_THREAD["Thread Callback Host ASIO<br/>(MMCSS Pro Audio)"]
             USB_AUDIO_THREAD["Thread Streaming USB Isócrono<br/>(WinUsb_WriteIsochPipeAsap)"]
-            CLK_TRACK["Rastreador Implícito de Clock EP 0x83 IN<br/>(Elimina Drift de Cristal USB 1.1)"]
-            PIPE_SRV["Servidor Ponte MIDI<br/>\\.\pipe\BCD2000_ASIO_MIDI_V1"]
+            CLK_TRACK["Rastreador Implícito de Clock EP 0x83 IN<br/>(Proteção contra Drift de Cristal)"]
+            PIPE_SRV["Servidor Ponte MIDI via Named Pipe<br/>(Named Pipe: BCD2000_ASIO_MIDI_V1)"]
         end
 
-        subgraph MIDI_DLL["bcd2000_midi.dll (System32 / Drivers32)"]
-            WINMM["DriverProc / midMessage / modMessage"]
-            DUAL["Transporte Dual-Mode<br/>Modo A: Cliente Pipe ASIO<br/>Modo B: WinUSB Direto + Pipe Controle"]
-            PARSER["MidiRunningStatusParser"]
+        subgraph MIDI_BOX["bcd2000_midi.dll (System32 / Drivers32)"]
+            WINMM["Pontos de Entrada WinMM<br/>(DriverProc / midMessage / modMessage)"]
+            DUAL["Controlador Transporte Dual-Mode<br/>Modo A: Cliente Pipe · Modo B: WinUSB Direto"]
+            PARSER["Motor MidiRunningStatusParser"]
         end
     end
 
     subgraph KERNEL["Kernel Windows e Vínculo USB"]
-        WINUSB["WinUSB.sys (Nativo Microsoft)<br/>Vinculado via .cat/.inf SHA-256 local<br/>(bcd2000_winusb_setup.exe)"]
+        WINUSB["WinUSB.sys (Driver USB Nativo Microsoft)<br/>Vinculado via Catálogo Assinado Local (bcd2000_winusb_setup.exe)"]
     end
 
-    subgraph HW["Hardware Behringer BCD2000 (VID 0x1397 / PID 0x00BD · USB 1.1)"]
-        EP_AUDIO["Pipes Isócronos de Áudio<br/>EP 0x02 OUT · EP 0x83 IN"]
-        EP_CTRL["Pipes MIDI / Controle<br/>EP 0x01 OUT (Frame 64B) · EP 0x81 IN"]
+    subgraph HW["Hardware Behringer BCD2000 (VID 0x1397 / PID 0x00BD)"]
+        EP_AUDIO["Endpoints Isócronos de Áudio<br/>EP 0x02 OUT (Reprodução) · EP 0x83 IN (Rastreamento Clock)"]
+        EP_CTRL["Endpoints de Controle e MIDI<br/>EP 0x01 OUT (Frame 64B: LEDs) · EP 0x81 IN (Controles)"]
     end
 
-    DAW_AUDIO <-->|"COM bufferSwitch"| IASIO_API
-    IASIO_API <--> ASIO_THREAD
-    ASIO_THREAD <--> RING
-    RING <--> USB_AUDIO_THREAD
+    DAW_AUDIO ---|"ASIO bufferSwitch"| IASIO_API
+    IASIO_API --> ASIO_THREAD
+    ASIO_THREAD -->|"Grava S16_LE"| RING
+    RING -->|"Lê 44/45 Frames"| USB_AUDIO_THREAD
     CLK_TRACK -.->|"Frames/ms Reais do DAC"| USB_AUDIO_THREAD
 
-    DAW_MIDI <-->|"Callbacks MME"| WINMM
-    WINMM <--> PARSER
-    PARSER <--> DUAL
-    DUAL <-->|"Modo A: MIDI Bidirecional"| PIPE_SRV
-    IASIO_API -.->|"Handoff Modo B -> A ('R'->'K')<br/>\\.\pipe\BCD2000_MIDI_CTRL_V1"| DUAL
+    DAW_MIDI ---|"Eventos MME WinMM"| WINMM
+    WINMM --> PARSER
+    PARSER --> DUAL
+    DUAL ---|"Modo A: MIDI Bidirecional"| PIPE_SRV
+    IASIO_API -.->|"Pedido Handoff Modo B para A"| DUAL
 
     USB_AUDIO_THREAD -->|"URBs Isócronos"| WINUSB
-    CLK_TRACK <--|"EP 0x83 ReadIsoch"| WINUSB
-    PIPE_SRV <-->|"EP 0x01 / 0x81 Overlapped"| WINUSB
-    DUAL <-->|"Modo B (ASIO Inativo)"| WINUSB
+    WINUSB -->|"Lê Isoch EP 0x83"| CLK_TRACK
+    PIPE_SRV ---|"Overlapped EP 0x01 / 0x81"| WINUSB
+    DUAL ---|"Modo B: WinUSB Autônomo"| WINUSB
 
-    WINUSB <--> EP_AUDIO
-    WINUSB <--> EP_CTRL
+    WINUSB --- EP_AUDIO
+    WINUSB --- EP_CTRL
 ```
 
 ---

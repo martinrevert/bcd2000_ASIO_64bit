@@ -36,56 +36,56 @@
 
 ```mermaid
 flowchart TB
-    subgraph HOST["64-bit ホストアプリケーション (Mixxx, Ableton Live, REAPER, Traktor)"]
-        DAW_AUDIO["ASIO ホストクライアント (IASIO COM)"]
-        DAW_MIDI["WinMM MME MIDI クライアント (midiIn / midiOut)"]
+    subgraph HOST["64-bit ホストアプリケーション (DAW / DJ ソフトウェア)"]
+        DAW_AUDIO["ASIO ホストクライアント<br/>(IASIO COM インターフェース)"]
+        DAW_MIDI["WinMM MIDI クライアント<br/>(midiIn / midiOut MME)"]
     end
 
     subgraph USERMODE["64-bit ユーザーモード・ドライバー層 (C++17 /MT)"]
-        subgraph ASIO_DLL["bcd2000_asio.dll (In-Proc COM サーバー)"]
-            IASIO_API["Bcd2000AsioDriver (IASIO)<br/>4 In / 4 Out · ASIOSTInt16LSB · 64..4096"]
-            RING["32,768 フレーム・インターリーブ・リングバッファ"]
+        subgraph ASIO_BOX["bcd2000_asio.dll (In-Proc COM サーバー)"]
+            IASIO_API["Bcd2000AsioDriver (IASIO クラス)<br/>4 In / 4 Out · S16_LE · 64..4096 サンプル"]
+            RING["32768 フレーム・インターリーブ・リングバッファ"]
             ASIO_THREAD["ASIO ホストコールバック・スレッド<br/>(MMCSS Pro Audio)"]
             USB_AUDIO_THREAD["USB アイソクロナス送信スレッド<br/>(WinUsb_WriteIsochPipeAsap)"]
-            CLK_TRACK["EP 0x83 IN 暗黙的クロック追従<br/>(USB 1.1 水晶ドリフト解消)"]
-            PIPE_SRV["MIDI ブリッジサーバー<br/>\\.\pipe\BCD2000_ASIO_MIDI_V1"]
+            CLK_TRACK["EP 0x83 IN 暗黙的クロック追従<br/>(水晶ドリフト防止)"]
+            PIPE_SRV["MIDI ブリッジパイプ・サーバー<br/>(名前付きパイプ: BCD2000_ASIO_MIDI_V1)"]
         end
 
-        subgraph MIDI_DLL["bcd2000_midi.dll (System32 / Drivers32)"]
-            WINMM["DriverProc / midMessage / modMessage"]
-            DUAL["デュアルモード・トランスポート<br/>Mode A: ASIO パイプクライアント<br/>Mode B: 単独 WinUSB + 制御パイプ"]
-            PARSER["MidiRunningStatusParser"]
+        subgraph MIDI_BOX["bcd2000_midi.dll (System32 / Drivers32)"]
+            WINMM["WinMM エントリポイント<br/>(DriverProc / midMessage / modMessage)"]
+            DUAL["デュアルモード・トランスポート制御<br/>Mode A: パイプクライアント · Mode B: 単独 WinUSB"]
+            PARSER["MidiRunningStatusParser エンジン"]
         end
     end
 
     subgraph KERNEL["Windows カーネル & バインディング"]
-        WINUSB["WinUSB.sys (Microsoft 標準)<br/>ローカル SHA-256 .cat/.inf でバインド<br/>(bcd2000_winusb_setup.exe)"]
+        WINUSB["WinUSB.sys (Microsoft 標準 USB ドライバー)<br/>ローカル署名カタログでバインド (bcd2000_winusb_setup.exe)"]
     end
 
-    subgraph HW["Behringer BCD2000 実機 (VID 0x1397 / PID 0x00BD · USB 1.1)"]
-        EP_AUDIO["オーディオ・アイソクロナス・パイプ<br/>EP 0x02 OUT · EP 0x83 IN"]
-        EP_CTRL["MIDI / 制御パイプ<br/>EP 0x01 OUT (64B フレーム) · EP 0x81 IN"]
+    subgraph HW["Behringer BCD2000 実機 (VID 0x1397 / PID 0x00BD)"]
+        EP_AUDIO["オーディオ・アイソクロナス EP<br/>EP 0x02 OUT (再生) · EP 0x83 IN (クロック追従)"]
+        EP_CTRL["制御 & MIDI EP<br/>EP 0x01 OUT (64B フレーム: LED) · EP 0x81 IN (操作子)"]
     end
 
-    DAW_AUDIO <-->|"COM bufferSwitch"| IASIO_API
-    IASIO_API <--> ASIO_THREAD
-    ASIO_THREAD <--> RING
-    RING <--> USB_AUDIO_THREAD
+    DAW_AUDIO ---|"ASIO bufferSwitch"| IASIO_API
+    IASIO_API --> ASIO_THREAD
+    ASIO_THREAD -->|"S16_LE 書き込み"| RING
+    RING -->|"44/45 フレーム読み出し"| USB_AUDIO_THREAD
     CLK_TRACK -.->|"実測 DAC Frames/ms"| USB_AUDIO_THREAD
 
-    DAW_MIDI <-->|"MME コールバック"| WINMM
-    WINMM <--> PARSER
-    PARSER <--> DUAL
-    DUAL <-->|"Mode A: 双方向 MIDI"| PIPE_SRV
-    IASIO_API -.->|"ハンドオフ Mode B -> A ('R'->'K')<br/>\\.\pipe\BCD2000_MIDI_CTRL_V1"| DUAL
+    DAW_MIDI ---|"WinMM MME イベント"| WINMM
+    WINMM --> PARSER
+    PARSER --> DUAL
+    DUAL ---|"Mode A: 双方向 MIDI"| PIPE_SRV
+    IASIO_API -.->|"Mode B から A へのハンドオフ要求"| DUAL
 
     USB_AUDIO_THREAD -->|"アイソクロナス URB"| WINUSB
-    CLK_TRACK <--|"EP 0x83 ReadIsoch"| WINUSB
-    PIPE_SRV <-->|"EP 0x01 / 0x81 Overlapped"| WINUSB
-    DUAL <-->|"Mode B (ASIO 待機時)"| WINUSB
+    WINUSB -->|"アイソクロナス EP 0x83 読み出し"| CLK_TRACK
+    PIPE_SRV ---|"オーバーラップ EP 0x01 / 0x81"| WINUSB
+    DUAL ---|"Mode B: 単独 WinUSB"| WINUSB
 
-    WINUSB <--> EP_AUDIO
-    WINUSB <--> EP_CTRL
+    WINUSB --- EP_AUDIO
+    WINUSB --- EP_CTRL
 ```
 
 ---

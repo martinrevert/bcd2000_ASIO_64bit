@@ -36,56 +36,56 @@
 
 ```mermaid
 flowchart TB
-    subgraph HOST["64 位宿主应用 (Mixxx, Ableton Live, REAPER, Traktor)"]
-        DAW_AUDIO["ASIO 宿主客户端 (IASIO COM)"]
-        DAW_MIDI["WinMM MME MIDI 客户端 (midiIn / midiOut)"]
+    subgraph HOST["64 位宿主应用 (DAW / DJ 软件)"]
+        DAW_AUDIO["ASIO 宿主客户端<br/>(IASIO COM 接口)"]
+        DAW_MIDI["WinMM MIDI 客户端<br/>(midiIn / midiOut MME)"]
     end
 
     subgraph USERMODE["64 位用户态驱动层 (C++17 /MT)"]
-        subgraph ASIO_DLL["bcd2000_asio.dll (进程内 COM 服务器)"]
-            IASIO_API["Bcd2000AsioDriver (IASIO)<br/>4 In / 4 Out · ASIOSTInt16LSB · 64..4096"]
-            RING["32,768 帧交织环形缓冲区"]
+        subgraph ASIO_BOX["bcd2000_asio.dll (进程内 COM 服务器)"]
+            IASIO_API["Bcd2000AsioDriver (IASIO 类)<br/>4 进 / 4 出 · S16_LE · 64..4096 采样"]
+            RING["32768 帧交织环形缓冲区"]
             ASIO_THREAD["ASIO 宿主回调线程<br/>(MMCSS Pro Audio)"]
             USB_AUDIO_THREAD["USB 同步流传输线程<br/>(WinUsb_WriteIsochPipeAsap)"]
-            CLK_TRACK["EP 0x83 IN 隐式时钟跟踪器<br/>(消除 USB 1.1 晶振漂移)"]
-            PIPE_SRV["MIDI 桥接服务器<br/>\\.\pipe\BCD2000_ASIO_MIDI_V1"]
+            CLK_TRACK["EP 0x83 IN 隐式时钟跟踪器<br/>(消除硬件晶振漂移)"]
+            PIPE_SRV["MIDI 管道桥接服务器<br/>(命名管道: BCD2000_ASIO_MIDI_V1)"]
         end
 
-        subgraph MIDI_DLL["bcd2000_midi.dll (System32 / Drivers32)"]
-            WINMM["DriverProc / midMessage / modMessage"]
-            DUAL["双模式传输引擎<br/>Mode A: ASIO 管道客户端<br/>Mode B: 独立 WinUSB + 控制管道"]
-            PARSER["MidiRunningStatusParser"]
+        subgraph MIDI_BOX["bcd2000_midi.dll (System32 / Drivers32)"]
+            WINMM["WinMM 入口函数<br/>(DriverProc / midMessage / modMessage)"]
+            DUAL["双模式传输控制器<br/>Mode A: 管道客户端 · Mode B: 独立 WinUSB"]
+            PARSER["MidiRunningStatusParser 引擎"]
         end
     end
 
     subgraph KERNEL["Windows 内核与驱动绑定"]
-        WINUSB["WinUSB.sys (微软系统内置)<br/>通过本地 SHA-256 .cat/.inf 绑定<br/>(bcd2000_winusb_setup.exe)"]
+        WINUSB["WinUSB.sys (微软内置 USB 驱动)<br/>通过本地签名安全编录绑定 (bcd2000_winusb_setup.exe)"]
     end
 
-    subgraph HW["Behringer BCD2000 硬件 (VID 0x1397 / PID 0x00BD · USB 1.1)"]
-        EP_AUDIO["音频同步管道<br/>EP 0x02 OUT · EP 0x83 IN"]
-        EP_CTRL["MIDI / 控制管道<br/>EP 0x01 OUT (64B 帧) · EP 0x81 IN"]
+    subgraph HW["Behringer BCD2000 硬件 (VID 0x1397 / PID 0x00BD)"]
+        EP_AUDIO["音频同步端点<br/>EP 0x02 OUT (音频播放) · EP 0x83 IN (时钟跟踪)"]
+        EP_CTRL["控制与 MIDI 端点<br/>EP 0x01 OUT (64B 数据包: LED) · EP 0x81 IN (控件)"]
     end
 
-    DAW_AUDIO <-->|"COM bufferSwitch"| IASIO_API
-    IASIO_API <--> ASIO_THREAD
-    ASIO_THREAD <--> RING
-    RING <--> USB_AUDIO_THREAD
+    DAW_AUDIO ---|"ASIO bufferSwitch"| IASIO_API
+    IASIO_API --> ASIO_THREAD
+    ASIO_THREAD -->|"写入 S16_LE"| RING
+    RING -->|"读取 44/45 帧"| USB_AUDIO_THREAD
     CLK_TRACK -.->|"DAC 实际帧率 (Frames/ms)"| USB_AUDIO_THREAD
 
-    DAW_MIDI <-->|"MME 回调"| WINMM
-    WINMM <--> PARSER
-    PARSER <--> DUAL
-    DUAL <-->|"Mode A: 双向 MIDI"| PIPE_SRV
-    IASIO_API -.->|"热交接 Mode B -> A ('R'->'K')<br/>\\.\pipe\BCD2000_MIDI_CTRL_V1"| DUAL
+    DAW_MIDI ---|"WinMM MME 事件"| WINMM
+    WINMM --> PARSER
+    PARSER --> DUAL
+    DUAL ---|"Mode A: 双向 MIDI"| PIPE_SRV
+    IASIO_API -.->|"Mode B 转 A 热交接请求"| DUAL
 
     USB_AUDIO_THREAD -->|"同步 URB"| WINUSB
-    CLK_TRACK <--|"EP 0x83 ReadIsoch"| WINUSB
-    PIPE_SRV <-->|"EP 0x01 / 0x81 重叠 I/O"| WINUSB
-    DUAL <-->|"Mode B (ASIO 空闲时)"| WINUSB
+    WINUSB -->|"读取同步 EP 0x83"| CLK_TRACK
+    PIPE_SRV ---|"重叠 I/O EP 0x01 / 0x81"| WINUSB
+    DUAL ---|"Mode B: 独立 WinUSB"| WINUSB
 
-    WINUSB <--> EP_AUDIO
-    WINUSB <--> EP_CTRL
+    WINUSB --- EP_AUDIO
+    WINUSB --- EP_CTRL
 ```
 
 ---
