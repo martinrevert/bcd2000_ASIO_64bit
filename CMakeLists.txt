@@ -98,6 +98,7 @@ target_link_libraries(bcd2000_diag_audio
 add_library(bcd2000_asio SHARED
     src/asio/bcd2000_asio_driver.cpp
     src/asio/dllmain_registry.cpp
+    src/ui/bcd2000_control_panel_gui.cpp
     src/asio/bcd2000_asio.def
 )
 
@@ -108,6 +109,10 @@ target_link_libraries(bcd2000_asio
         ole32
         advapi32
         user32
+        gdi32
+        dwmapi
+        comctl32
+        uxtheme
         avrt
 )
 
@@ -161,6 +166,26 @@ target_link_libraries(bcd2000_winusb_setup
         newdev
 )
 
+# Milestone 6: Interactive 64-bit Control Panel Desktop Application (bcd2000_control_panel.exe)
+add_executable(bcd2000_control_panel WIN32
+    tools/bcd2000_control_panel.cpp
+    src/ui/bcd2000_control_panel_gui.cpp
+    src/ui/bcd2000_control_panel.rc
+)
+
+target_link_libraries(bcd2000_control_panel
+    PRIVATE
+        winusb
+        setupapi
+        ole32
+        advapi32
+        user32
+        gdi32
+        dwmapi
+        comctl32
+        uxtheme
+)
+
 # Copy hostsample.exe to third_party/asio-sdk/host/pc/hostsample.exe to match ROADMAP_VERIFICATION.md
 add_custom_command(TARGET hostsample POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -170,7 +195,7 @@ add_custom_command(TARGET hostsample POST_BUILD
 )
 
 # Set standard output directories matching verification roadmap
-set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio bcd2000_asio hostsample bcd2000_midi hostsample_midi bcd2000_winusb_setup PROPERTIES
+set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio bcd2000_asio hostsample bcd2000_midi hostsample_midi bcd2000_winusb_setup bcd2000_control_panel PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
@@ -212,6 +237,7 @@ if(MAKENSIS_EXECUTABLE)
         DEPENDS
             bcd2000_asio
             bcd2000_midi
+            bcd2000_control_panel
             bcd2000_winusb_setup
             bcd2000_diag_usb
             bcd2000_diag_midi

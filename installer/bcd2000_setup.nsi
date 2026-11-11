@@ -89,14 +89,68 @@ Section $(NAME_SecDrivers) SecDrivers
     SetRegView 64
     ${DisableX64FSRedirection}
 
+    ; Cleanly close standalone control panel if running
+    nsExec::Exec 'taskkill /F /IM bcd2000_control_panel.exe'
+
+    ; Pre-check: Ensure driver DLLs are not locked by an open DAW (Ableton, Mixxx, REAPER, etc.)
+check_driver_locks:
+    ${If} ${FileExists} "$INSTDIR\bcd2000_asio.dll"
+        ClearErrors
+        FileOpen $0 "$INSTDIR\bcd2000_asio.dll" "a"
+        ${If} ${Errors}
+            MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION $(MSG_DAW_RUNNING_LOCK) IDRETRY check_driver_locks
+            Abort
+        ${Else}
+            FileClose $0
+        ${EndIf}
+    ${EndIf}
+
+    ${If} ${FileExists} "$SYSDIR\bcd2000_midi.dll"
+        ClearErrors
+        FileOpen $0 "$SYSDIR\bcd2000_midi.dll" "a"
+        ${If} ${Errors}
+            MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION $(MSG_DAW_RUNNING_LOCK) IDRETRY check_driver_locks
+            Abort
+        ${Else}
+            FileClose $0
+        ${EndIf}
+    ${EndIf}
+
+    ${If} ${FileExists} "$INSTDIR\bcd2000_midi.dll"
+        ClearErrors
+        FileOpen $0 "$INSTDIR\bcd2000_midi.dll" "a"
+        ${If} ${Errors}
+            MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION $(MSG_DAW_RUNNING_LOCK) IDRETRY check_driver_locks
+            Abort
+        ${Else}
+            FileClose $0
+        ${EndIf}
+    ${EndIf}
+
     ; Core driver binaries, licenses and docs in Program Files (64-bit)
     SetOutPath "$INSTDIR"
     File "${BUILD_BIN_DIR}\bcd2000_asio.dll"
     File "${BUILD_BIN_DIR}\bcd2000_midi.dll"
+    File "${BUILD_BIN_DIR}\bcd2000_control_panel.exe"
     File "${BUILD_BIN_DIR}\bcd2000_winusb_setup.exe"
+    File "${REPO_DIR}\installer\resources\bcd2000.ico"
     File "${REPO_DIR}\README.md"
     File "/oname=LICENSE.txt" "${REPO_DIR}\LICENSE"
     File "/oname=AUTHORS.txt" "${REPO_DIR}\AUTHORS"
+
+    ; Windows Device Metadata Package and Icon for Devices and Printers
+    SetOutPath "$INSTDIR\metadata"
+    File "${REPO_DIR}\installer\metadata\b2d20000-1397-00bd-a510-000000000064.devicemetadata-ms"
+
+    ; Install custom icon into System32 (for INF DeviceDisplayIcon) and DeviceMetadataStore
+    SetOutPath "$SYSDIR"
+    File "/oname=bcd2000.ico" "${REPO_DIR}\installer\resources\bcd2000.ico"
+
+    SetShellVarContext all
+    CreateDirectory "$APPDATA\Microsoft\Windows\DeviceMetadataStore"
+    CreateDirectory "$APPDATA\Microsoft\Windows\DeviceMetadataStore\en-US"
+    CopyFiles /SILENT "$INSTDIR\metadata\b2d20000-1397-00bd-a510-000000000064.devicemetadata-ms" "$APPDATA\Microsoft\Windows\DeviceMetadataStore\"
+    CopyFiles /SILENT "$INSTDIR\metadata\b2d20000-1397-00bd-a510-000000000064.devicemetadata-ms" "$APPDATA\Microsoft\Windows\DeviceMetadataStore\en-US\"
 
     ; Reference copy of Mixxx safe preset + diagnostic tools
     SetOutPath "$INSTDIR\tools"
@@ -152,8 +206,15 @@ Section $(NAME_SecDrivers) SecDrivers
     WriteRegStr HKLM "${REG_UNINST_KEY}" "HelpLink" "${APP_ISSUES}"
     WriteRegStr HKLM "${REG_UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegStr HKLM "${REG_UNINST_KEY}" "InstallLocation" "$INSTDIR"
+    WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayIcon" "$INSTDIR\bcd2000.ico"
     WriteRegDWORD HKLM "${REG_UNINST_KEY}" "NoModify" 1
     WriteRegDWORD HKLM "${REG_UNINST_KEY}" "NoRepair" 1
+
+    ; Start Menu Shortcuts
+    SetShellVarContext all
+    CreateDirectory "$SMPROGRAMS\Behringer BCD2000"
+    CreateShortcut "$SMPROGRAMS\Behringer BCD2000\BCD2000 Control Panel.lnk" "$INSTDIR\bcd2000_control_panel.exe" "" "$INSTDIR\bcd2000.ico" 0
+    CreateShortcut "$SMPROGRAMS\Behringer BCD2000\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 SectionEnd
 
 Section /o $(NAME_SecMixxxPreset) SecMixxxPreset
@@ -187,6 +248,7 @@ Section "Uninstall"
         Pop $0
         Delete /REBOOTOK "$SYSDIR\bcd2000_midi.dll"
     ${EndIf}
+    Delete /REBOOTOK "$SYSDIR\bcd2000.ico"
 
     DetailPrint $(UN_DETAIL_WINUSB)
     ${If} ${FileExists} "$INSTDIR\bcd2000_winusb_setup.exe"
@@ -195,6 +257,11 @@ Section "Uninstall"
     ${EndIf}
 
     ${EnableX64FSRedirection}
+
+    ; Remove Windows Device Metadata Package
+    SetShellVarContext all
+    Delete "$APPDATA\Microsoft\Windows\DeviceMetadataStore\b2d20000-1397-00bd-a510-000000000064.devicemetadata-ms"
+    Delete "$APPDATA\Microsoft\Windows\DeviceMetadataStore\en-US\b2d20000-1397-00bd-a510-000000000064.devicemetadata-ms"
 
     ; Remove Mixxx user preset only if we installed it
     ReadRegDWORD $0 HKLM "${REG_APP_KEY}" "InstalledMixxxPreset"
@@ -209,6 +276,11 @@ Section "Uninstall"
     DeleteRegKey HKCU "SOFTWARE\Classes\CLSID\{B2D20000-1397-00BD-A510-000000000064}"
 
     ; Remove installed files & directories
+    SetShellVarContext all
+    Delete "$SMPROGRAMS\Behringer BCD2000\BCD2000 Control Panel.lnk"
+    Delete "$SMPROGRAMS\Behringer BCD2000\Uninstall.lnk"
+    RMDir "$SMPROGRAMS\Behringer BCD2000"
+
     Delete "$INSTDIR\tools\bcd2000_diag_usb.exe"
     Delete "$INSTDIR\tools\bcd2000_diag_midi.exe"
     Delete "$INSTDIR\tools\bcd2000_diag_audio.exe"
@@ -223,7 +295,11 @@ Section "Uninstall"
 
     Delete "$INSTDIR\bcd2000_asio.dll"
     Delete "$INSTDIR\bcd2000_midi.dll"
+    Delete "$INSTDIR\bcd2000_control_panel.exe"
     Delete "$INSTDIR\bcd2000_winusb_setup.exe"
+    Delete "$INSTDIR\bcd2000.ico"
+    Delete "$INSTDIR\metadata\b2d20000-1397-00bd-a510-000000000064.devicemetadata-ms"
+    RMDir "$INSTDIR\metadata"
     Delete "$INSTDIR\README.md"
     Delete "$INSTDIR\LICENSE.txt"
     Delete "$INSTDIR\AUTHORS.txt"

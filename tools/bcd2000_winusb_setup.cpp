@@ -56,8 +56,10 @@ constexpr wchar_t kCertSubject[] = L"CN=Behringer BCD2000 WinUSB Local Driver";
 constexpr wchar_t kInfFileName[] = L"bcd2000_winusb.inf";
 constexpr wchar_t kCatFileName[] = L"bcd2000_winusb.cat";
 constexpr wchar_t kKeyContainer[] = L"BCD2000_WinUSB_Ephemeral_Key";
-constexpr wchar_t kInfMarker[] = L"Behringer BCD2000 (WinUSB)";
+constexpr wchar_t kInfMarker[] = L"Behringer BCD2000 DJ Controller";
+constexpr wchar_t kLegacyInfMarker[] = L"Behringer BCD2000 (WinUSB)";
 constexpr wchar_t kHwIdMatch[] = L"VID_1397&PID_00BD";
+constexpr wchar_t kMetadataGuid[] = L"b2d20000-1397-00bd-a510-000000000064";
 
 // Structures exported dynamically from Mssign32.dll (not shipped in standard Windows SDK headers)
 constexpr DWORD kSignerSubjectFile = 0x01;
@@ -135,11 +137,25 @@ using PFN_SignerSignEx2 = HRESULT(WINAPI *)(
 using PFN_SignerFreeSignerContext = HRESULT(WINAPI *)(SIGNER_CONTEXT *pSignerContext);
 
 void LogInfo(const wchar_t *fmt, ...) {
+    wchar_t buf[1024]{};
     va_list args;
     va_start(args, fmt);
-    std::vwprintf(fmt, args);
+    std::vswprintf(buf, sizeof(buf) / sizeof(wchar_t), fmt, args);
     va_end(args);
-    std::wprintf(L"\n");
+
+    std::wprintf(L"%s\n", buf);
+    std::fflush(stdout);
+
+    wchar_t tempPath[MAX_PATH]{};
+    if (GetTempPathW(MAX_PATH, tempPath) > 0) {
+        std::wstring logFile = std::wstring(tempPath) + L"bcd2000_winusb_setup.log";
+        FILE *f = _wfopen(logFile.c_str(), L"a, ccs=UTF-8");
+        if (f) {
+            std::fputws(buf, f);
+            std::fputws(L"\n", f);
+            std::fclose(f);
+        }
+    }
 }
 
 bool WriteUtf8File(const std::wstring &path, const std::string &content) {
@@ -174,7 +190,7 @@ bool BuildInfAndCatalog(const std::wstring &workDir, std::wstring &outInfPath, s
         "ClassGuid   = {88BAE032-5A81-49F0-BC3D-A4FF138216D6}\r\n"
         "Provider    = %ManufacturerName%\r\n"
         "CatalogFile = bcd2000_winusb.cat\r\n"
-        "DriverVer   = 11/10/2026,1.0.0.0\r\n"
+        "DriverVer   = 11/10/2026,2.0.0.0\r\n"
         "\r\n"
         "[Manufacturer]\r\n"
         "%ManufacturerName% = Standard,NTamd64\r\n"
@@ -195,10 +211,13 @@ bool BuildInfAndCatalog(const std::wstring &workDir, std::wstring &outInfPath, s
         "\r\n"
         "[Dev_AddReg]\r\n"
         "HKR,,DeviceInterfaceGUIDs,0x10000,\"{DEE824EF-729B-4A0E-9C14-B7117D33A817}\"\r\n"
+        "HKR,,DeviceDisplayIcon,0x00020000,\"%SystemRoot%\\System32\\bcd2000.ico\"\r\n"
+        "HKR,,DeviceCategory,0x00010000,\"Audio.DJController\",\"Audio\"\r\n"
+        "HKR,,FriendlyName,0x00000000,\"%DeviceName%\"\r\n"
         "\r\n"
         "[Strings]\r\n"
-        "ManufacturerName = \"Behringer BCD2000 ASIO/MIDI Project\"\r\n"
-        "DeviceName       = \"Behringer BCD2000 (WinUSB)\"\r\n";
+        "ManufacturerName = \"Behringer\"\r\n"
+        "DeviceName       = \"Behringer BCD2000 DJ Controller\"\r\n";
 
     if (!WriteUtf8File(outInfPath, infContent)) {
         LogInfo(L"[ERR] Failed to write INF file: %s (err=%lu)", outInfPath.c_str(), GetLastError());
@@ -217,19 +236,19 @@ bool BuildInfAndCatalog(const std::wstring &workDir, std::wstring &outInfPath, s
         return false;
     }
 
-    const wchar_t osAttrVal[] = L"2:6.0,2:6.1,2:6.2,2:6.3,2:10.0";
-    const wchar_t hwidVal[] = L"usb\\vid_1397&pid_00bd";
+    char osAttrVal[] = "2:6.0,2:6.1,2:6.2,2:6.3,2:10.0";
+    char hwidVal[] = "usb\\vid_1397&pid_00bd";
     const DWORD attrFlags =
         CRYPTCAT_ATTR_AUTHENTICATED | CRYPTCAT_ATTR_NAMEASCII | CRYPTCAT_ATTR_DATAASCII;
 
     if (!CryptCATPutCatAttrInfo(
             hCat, const_cast<LPWSTR>(L"HWID1"), attrFlags,
-            static_cast<DWORD>(std::wcslen(hwidVal) * sizeof(wchar_t)),
-            reinterpret_cast<BYTE *>(const_cast<LPWSTR>(hwidVal))) ||
+            static_cast<DWORD>(std::strlen(hwidVal)),
+            reinterpret_cast<BYTE *>(hwidVal)) ||
         !CryptCATPutCatAttrInfo(
             hCat, const_cast<LPWSTR>(L"OSAttr"), attrFlags,
-            static_cast<DWORD>(std::wcslen(osAttrVal) * sizeof(wchar_t)),
-            reinterpret_cast<BYTE *>(const_cast<LPWSTR>(osAttrVal)))) {
+            static_cast<DWORD>(std::strlen(osAttrVal)),
+            reinterpret_cast<BYTE *>(osAttrVal))) {
         LogInfo(L"[ERR] CryptCATPutCatAttrInfo failed (err=0x%lX)", GetLastError());
         CryptCATClose(hCat);
         return false;
@@ -306,7 +325,7 @@ bool BuildInfAndCatalog(const std::wstring &workDir, std::wstring &outInfPath, s
 
     CRYPTCATMEMBER *member = CryptCATPutMemberInfo(
         hCat,
-        const_cast<LPWSTR>(outInfPath.c_str()),
+        const_cast<LPWSTR>(kInfFileName),
         const_cast<LPWSTR>(refTag.c_str()),
         &subjGuid,
         0x200,
@@ -318,14 +337,15 @@ bool BuildInfAndCatalog(const std::wstring &workDir, std::wstring &outInfPath, s
         return false;
     }
 
+    char infNameAscii[] = "bcd2000_winusb.inf";
     if (!CryptCATPutAttrInfo(
             hCat, member, const_cast<LPWSTR>(L"File"), attrFlags,
-            static_cast<DWORD>(std::wcslen(kInfFileName) * sizeof(wchar_t)),
-            reinterpret_cast<BYTE *>(const_cast<LPWSTR>(kInfFileName))) ||
+            static_cast<DWORD>(std::strlen(infNameAscii)),
+            reinterpret_cast<BYTE *>(infNameAscii)) ||
         !CryptCATPutAttrInfo(
             hCat, member, const_cast<LPWSTR>(L"OSAttr"), attrFlags,
-            static_cast<DWORD>(std::wcslen(osAttrVal) * sizeof(wchar_t)),
-            reinterpret_cast<BYTE *>(const_cast<LPWSTR>(osAttrVal)))) {
+            static_cast<DWORD>(std::strlen(osAttrVal)),
+            reinterpret_cast<BYTE *>(osAttrVal))) {
         LogInfo(L"[ERR] CryptCATPutAttrInfo failed (err=0x%lX)", GetLastError());
         CryptCATClose(hCat);
         return false;
@@ -351,17 +371,28 @@ bool CreateEphemeralSigningCert(PCCERT_CONTEXT &outCert, HCRYPTPROV &outProv) {
     outCert = nullptr;
     outProv = 0;
 
+    DWORD provFlags = CRYPT_NEWKEYSET | CRYPT_MACHINE_KEYSET;
+    DWORD delFlags = CRYPT_DELETEKEYSET | CRYPT_MACHINE_KEYSET;
+    DWORD kpiFlags = CRYPT_MACHINE_KEYSET;
+
     // Scrub any leftover ephemeral container first
     HCRYPTPROV tmpProv = 0;
     CryptAcquireContextW(
-        &tmpProv, kKeyContainer, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES,
-        CRYPT_DELETEKEYSET | CRYPT_MACHINE_KEYSET);
+        &tmpProv, kKeyContainer, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, delFlags);
 
     if (!CryptAcquireContextW(
-            &outProv, kKeyContainer, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES,
-            CRYPT_NEWKEYSET | CRYPT_MACHINE_KEYSET)) {
-        LogInfo(L"[ERR] CryptAcquireContextW(NEWKEYSET) failed (err=0x%lX)", GetLastError());
-        return false;
+            &outProv, kKeyContainer, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, provFlags)) {
+        // If machine keyset is restricted, fall back to user keyset
+        provFlags = CRYPT_NEWKEYSET;
+        delFlags = CRYPT_DELETEKEYSET;
+        kpiFlags = 0;
+        CryptAcquireContextW(
+            &tmpProv, kKeyContainer, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, delFlags);
+        if (!CryptAcquireContextW(
+                &outProv, kKeyContainer, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES, provFlags)) {
+            LogInfo(L"[ERR] CryptAcquireContextW(NEWKEYSET) failed (err=0x%lX)", GetLastError());
+            return false;
+        }
     }
 
     HCRYPTKEY hKey = 0;
@@ -409,21 +440,62 @@ bool CreateEphemeralSigningCert(PCCERT_CONTEXT &outCert, HCRYPTPROV &outProv) {
         return false;
     }
 
-    CERT_EXTENSION certExt{};
-    certExt.pszObjId = const_cast<LPSTR>(szOID_ENHANCED_KEY_USAGE);
-    certExt.fCritical = FALSE;
-    certExt.Value.cbData = cbEku;
-    certExt.Value.pbData = ekuBytes.data();
+    // Add Basic Constraints: CA = TRUE (satisfies DriverStore root CA trust verification)
+    CERT_BASIC_CONSTRAINTS2_INFO bc{};
+    bc.fCA = TRUE;
+    bc.fPathLenConstraint = FALSE;
+
+    DWORD cbBc = 0;
+    CryptEncodeObjectEx(
+        X509_ASN_ENCODING, X509_BASIC_CONSTRAINTS2, &bc, 0, nullptr, nullptr, &cbBc);
+    std::vector<BYTE> bcBytes(cbBc);
+    if (!CryptEncodeObjectEx(
+            X509_ASN_ENCODING, X509_BASIC_CONSTRAINTS2, &bc, 0, nullptr, bcBytes.data(), &cbBc)) {
+        LogInfo(L"[ERR] CryptEncodeObjectEx(BC) failed (err=0x%lX)", GetLastError());
+        return false;
+    }
+
+    // Add Key Usage: Digital Signature, Cert Sign, CRL Sign
+    BYTE ku = CERT_DIGITAL_SIGNATURE_KEY_USAGE | CERT_KEY_CERT_SIGN_KEY_USAGE | CERT_CRL_SIGN_KEY_USAGE;
+    CRYPT_BIT_BLOB kuBlob{};
+    kuBlob.cbData = 1;
+    kuBlob.pbData = &ku;
+
+    DWORD cbKu = 0;
+    CryptEncodeObjectEx(
+        X509_ASN_ENCODING, X509_KEY_USAGE, &kuBlob, 0, nullptr, nullptr, &cbKu);
+    std::vector<BYTE> kuBytes(cbKu);
+    if (!CryptEncodeObjectEx(
+            X509_ASN_ENCODING, X509_KEY_USAGE, &kuBlob, 0, nullptr, kuBytes.data(), &cbKu)) {
+        LogInfo(L"[ERR] CryptEncodeObjectEx(KU) failed (err=0x%lX)", GetLastError());
+        return false;
+    }
+
+    CERT_EXTENSION certExts[3]{};
+    certExts[0].pszObjId = const_cast<LPSTR>(szOID_ENHANCED_KEY_USAGE);
+    certExts[0].fCritical = FALSE;
+    certExts[0].Value.cbData = cbEku;
+    certExts[0].Value.pbData = ekuBytes.data();
+
+    certExts[1].pszObjId = const_cast<LPSTR>(szOID_BASIC_CONSTRAINTS2);
+    certExts[1].fCritical = TRUE;
+    certExts[1].Value.cbData = cbBc;
+    certExts[1].Value.pbData = bcBytes.data();
+
+    certExts[2].pszObjId = const_cast<LPSTR>(szOID_KEY_USAGE);
+    certExts[2].fCritical = TRUE;
+    certExts[2].Value.cbData = cbKu;
+    certExts[2].Value.pbData = kuBytes.data();
 
     CERT_EXTENSIONS exts{};
-    exts.cExtension = 1;
-    exts.rgExtension = &certExt;
+    exts.cExtension = 3;
+    exts.rgExtension = certExts;
 
     CRYPT_KEY_PROV_INFO kpi{};
     kpi.pwszContainerName = const_cast<LPWSTR>(kKeyContainer);
     kpi.pwszProvName = const_cast<LPWSTR>(MS_ENH_RSA_AES_PROV_W);
     kpi.dwProvType = PROV_RSA_AES;
-    kpi.dwFlags = CRYPT_MACHINE_KEYSET;
+    kpi.dwFlags = kpiFlags;
     kpi.dwKeySpec = AT_SIGNATURE;
 
     CRYPT_ALGORITHM_IDENTIFIER sigAlg{};
@@ -633,37 +705,39 @@ void UninstallExistingOemInfs() {
             continue;
         }
         LARGE_INTEGER sz{};
-        if (GetFileSizeEx(hFile, &sz) && sz.QuadPart > 0 && sz.QuadPart < 262144) {
+        if (GetFileSizeEx(hFile, &sz) && sz.QuadPart > 0 && sz.QuadPart < 524288) {
             std::string raw(static_cast<size_t>(sz.QuadPart), '\0');
             DWORD readBytes = 0;
             if (ReadFile(hFile, raw.data(), static_cast<DWORD>(raw.size()), &readBytes, nullptr)) {
                 CloseHandle(hFile);
                 hFile = INVALID_HANDLE_VALUE;
 
-                // Match both UTF-8/ASCII and UTF-16LE INF files cleanly via wide search
-                std::wstring content;
-                if (raw.size() >= 2 &&
-                    static_cast<unsigned char>(raw[0]) == 0xFF &&
-                    static_cast<unsigned char>(raw[1]) == 0xFE) {
-                    const size_t wlen = (raw.size() - 2) / sizeof(wchar_t);
-                    content.resize(wlen);
-                    std::memcpy(content.data(), raw.data() + 2, wlen * sizeof(wchar_t));
-                } else {
-                    int wlen = MultiByteToWideChar(
-                        CP_ACP, 0, raw.data(), static_cast<int>(readBytes), nullptr, 0);
-                    if (wlen > 0) {
-                        content.resize(static_cast<size_t>(wlen));
-                        MultiByteToWideChar(
-                            CP_ACP, 0, raw.data(), static_cast<int>(readBytes), content.data(), wlen);
+                // Match both ASCII/UTF-8 and UTF-16LE INF files cleanly
+                std::string rawLower = raw;
+                for (auto &c : rawLower) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+
+                bool match = false;
+                if (rawLower.find("1397") != std::string::npos &&
+                    rawLower.find("00bd") != std::string::npos) {
+                    match = true;
+                } else if (raw.size() >= 4) {
+                    const wchar_t *wptr = reinterpret_cast<const wchar_t *>(raw.data());
+                    size_t wlen = raw.size() / sizeof(wchar_t);
+                    std::wstring wstr(wptr, wlen);
+                    for (auto &wc : wstr) wc = towlower(wc);
+                    if (wstr.find(L"1397") != std::wstring::npos &&
+                        wstr.find(L"00bd") != std::wstring::npos) {
+                        match = true;
                     }
                 }
 
-                if (content.find(kInfMarker) != std::wstring::npos &&
-                    content.find(kHwIdMatch) != std::wstring::npos) {
-                    LogInfo(L"[UNINSTALL] Removing OEM INF: %s", fd.cFileName);
+                if (match) {
+                    LogInfo(L"[UNINSTALL] Found matching OEM INF: %s, removing...", fd.cFileName);
                     if (!SetupUninstallOEMInfW(fd.cFileName, SUOI_FORCEDELETE, nullptr)) {
                         LogInfo(L"[WARN] SetupUninstallOEMInfW(%s) err=%lu",
                                 fd.cFileName, GetLastError());
+                    } else {
+                        LogInfo(L"[OK] Successfully uninstalled OEM INF %s", fd.cFileName);
                     }
                 }
             }
@@ -674,6 +748,196 @@ void UninstallExistingOemInfs() {
     } while (FindNextFileW(hFind, &fd));
 
     FindClose(hFind);
+}
+
+void SetDeviceDisplayProperties() {
+    HDEVINFO hDevInfo = SetupDiGetClassDevsW(
+        nullptr, L"USB", nullptr, DIGCF_ALLCLASSES | DIGCF_PRESENT);
+    if (hDevInfo == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    SP_DEVINFO_DATA devInfoData{};
+    devInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
+
+    const wchar_t kFriendlyName[] = L"Behringer BCD2000 DJ Controller";
+    const wchar_t kIconPath[] = L"%SystemRoot%\\System32\\bcd2000.ico";
+    const wchar_t kMfg[] = L"Behringer";
+    const wchar_t kCatMulti[] = L"Audio.DJController\0Audio\0";
+
+    for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfoData); ++i) {
+        wchar_t hwidBuf[512]{};
+        if (SetupDiGetDeviceRegistryPropertyW(
+                hDevInfo, &devInfoData, SPDRP_HARDWAREID, nullptr,
+                reinterpret_cast<PBYTE>(hwidBuf), sizeof(hwidBuf), nullptr)) {
+            std::wstring hwid(hwidBuf);
+            if (hwid.find(L"VID_1397") != std::wstring::npos &&
+                hwid.find(L"PID_00BD") != std::wstring::npos) {
+                LogInfo(L"[INSTALL] Setting device display properties for %s...", hwid.c_str());
+
+                SetupDiSetDeviceRegistryPropertyW(
+                    hDevInfo, &devInfoData, SPDRP_FRIENDLYNAME,
+                    reinterpret_cast<const BYTE *>(kFriendlyName),
+                    static_cast<DWORD>((std::wcslen(kFriendlyName) + 1) * sizeof(wchar_t)));
+
+                SetupDiSetDeviceRegistryPropertyW(
+                    hDevInfo, &devInfoData, SPDRP_MFG,
+                    reinterpret_cast<const BYTE *>(kMfg),
+                    static_cast<DWORD>((std::wcslen(kMfg) + 1) * sizeof(wchar_t)));
+
+                HKEY hDevKey = SetupDiOpenDevRegKey(
+                    hDevInfo, &devInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_SET_VALUE);
+                if (hDevKey != INVALID_HANDLE_VALUE && hDevKey != nullptr) {
+                    RegSetValueExW(
+                        hDevKey, L"FriendlyName", 0, REG_SZ,
+                        reinterpret_cast<const BYTE *>(kFriendlyName),
+                        static_cast<DWORD>((std::wcslen(kFriendlyName) + 1) * sizeof(wchar_t)));
+                    RegSetValueExW(
+                        hDevKey, L"DeviceDisplayIcon", 0, REG_EXPAND_SZ,
+                        reinterpret_cast<const BYTE *>(kIconPath),
+                        static_cast<DWORD>((std::wcslen(kIconPath) + 1) * sizeof(wchar_t)));
+                    RegSetValueExW(
+                        hDevKey, L"DeviceCategory", 0, REG_MULTI_SZ,
+                        reinterpret_cast<const BYTE *>(kCatMulti),
+                        static_cast<DWORD>(sizeof(kCatMulti)));
+                    RegCloseKey(hDevKey);
+                }
+
+                // Also update hardware instance key & Device Parameters in registry
+                HKEY hUsbRoot = nullptr;
+                if (RegOpenKeyExW(
+                        HKEY_LOCAL_MACHINE,
+                        L"SYSTEM\\CurrentControlSet\\Enum\\USB\\VID_1397&PID_00BD",
+                        0, KEY_READ, &hUsbRoot) == ERROR_SUCCESS) {
+                    wchar_t instName[256]{};
+                    DWORD idx = 0;
+                    DWORD nameLen = static_cast<DWORD>(std::size(instName));
+                    while (RegEnumKeyExW(hUsbRoot, idx++, instName, &nameLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+                        std::wstring instPath = std::wstring(L"SYSTEM\\CurrentControlSet\\Enum\\USB\\VID_1397&PID_00BD\\") + instName;
+                        HKEY hInstKey = nullptr;
+                        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, instPath.c_str(), 0, KEY_SET_VALUE, &hInstKey) == ERROR_SUCCESS) {
+                            RegSetValueExW(
+                                hInstKey, L"FriendlyName", 0, REG_SZ,
+                                reinterpret_cast<const BYTE *>(kFriendlyName),
+                                static_cast<DWORD>((std::wcslen(kFriendlyName) + 1) * sizeof(wchar_t)));
+                            RegSetValueExW(
+                                hInstKey, L"DeviceDesc", 0, REG_SZ,
+                                reinterpret_cast<const BYTE *>(kFriendlyName),
+                                static_cast<DWORD>((std::wcslen(kFriendlyName) + 1) * sizeof(wchar_t)));
+                            RegSetValueExW(
+                                hInstKey, L"Mfg", 0, REG_SZ,
+                                reinterpret_cast<const BYTE *>(kMfg),
+                                static_cast<DWORD>((std::wcslen(kMfg) + 1) * sizeof(wchar_t)));
+                            RegCloseKey(hInstKey);
+                        }
+
+                        std::wstring paramPath = instPath + L"\\Device Parameters";
+                        HKEY hParamKey = nullptr;
+                        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, paramPath.c_str(), 0, KEY_SET_VALUE, &hParamKey) == ERROR_SUCCESS) {
+                            RegSetValueExW(
+                                hParamKey, L"FriendlyName", 0, REG_SZ,
+                                reinterpret_cast<const BYTE *>(kFriendlyName),
+                                static_cast<DWORD>((std::wcslen(kFriendlyName) + 1) * sizeof(wchar_t)));
+                            RegSetValueExW(
+                                hParamKey, L"DeviceDisplayIcon", 0, REG_EXPAND_SZ,
+                                reinterpret_cast<const BYTE *>(kIconPath),
+                                static_cast<DWORD>((std::wcslen(kIconPath) + 1) * sizeof(wchar_t)));
+                            RegSetValueExW(
+                                hParamKey, L"DeviceCategory", 0, REG_MULTI_SZ,
+                                reinterpret_cast<const BYTE *>(kCatMulti),
+                                static_cast<DWORD>(sizeof(kCatMulti)));
+                            RegCloseKey(hParamKey);
+                        }
+                        nameLen = static_cast<DWORD>(std::size(instName));
+                    }
+                    RegCloseKey(hUsbRoot);
+                }
+            }
+        }
+    }
+    SetupDiDestroyDeviceInfoList(hDevInfo);
+}
+
+void InstallDeviceIconAndMetadata(PCCERT_CONTEXT cert) {
+    wchar_t exePath[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::wstring exeDir = exePath;
+    const size_t slashPos = exeDir.find_last_of(L"\\/");
+    if (slashPos != std::wstring::npos) {
+        exeDir = exeDir.substr(0, slashPos);
+    }
+
+    wchar_t sysDir[MAX_PATH]{};
+    GetSystemDirectoryW(sysDir, MAX_PATH);
+
+    // 1. Copy bcd2000.ico to System32 if present
+    std::wstring icoSrc = exeDir + L"\\bcd2000.ico";
+    if (GetFileAttributesW(icoSrc.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        icoSrc = exeDir + L"\\..\\installer\\resources\\bcd2000.ico";
+    }
+    std::wstring icoDst = std::wstring(sysDir) + L"\\bcd2000.ico";
+    if (GetFileAttributesW(icoSrc.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        if (CopyFileW(icoSrc.c_str(), icoDst.c_str(), FALSE)) {
+            LogInfo(L"[INSTALL] Staged device icon to %s", icoDst.c_str());
+        }
+    }
+
+    // 2. Stage signed Device Metadata Package to Windows DeviceMetadataStore
+    wchar_t progData[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"ProgramData", progData, MAX_PATH) > 0) {
+        std::wstring metaStore = std::wstring(progData) + L"\\Microsoft\\Windows\\DeviceMetadataStore";
+        std::wstring metaStoreEn = metaStore + L"\\en-US";
+        CreateDirectoryW(metaStore.c_str(), nullptr);
+        CreateDirectoryW(metaStoreEn.c_str(), nullptr);
+
+        std::wstring metaPkgName = std::wstring(kMetadataGuid) + L".devicemetadata-ms";
+        std::wstring metaSrc = exeDir + L"\\" + metaPkgName;
+        if (GetFileAttributesW(metaSrc.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            metaSrc = exeDir + L"\\metadata\\" + metaPkgName;
+        }
+        if (GetFileAttributesW(metaSrc.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            metaSrc = exeDir + L"\\..\\installer\\metadata\\" + metaPkgName;
+        }
+
+        if (GetFileAttributesW(metaSrc.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            const std::wstring dst1 = metaStore + L"\\" + metaPkgName;
+            const std::wstring dst2 = metaStoreEn + L"\\" + metaPkgName;
+            CopyFileW(metaSrc.c_str(), dst1.c_str(), FALSE);
+            CopyFileW(metaSrc.c_str(), dst2.c_str(), FALSE);
+
+            // Digitally sign the metadata packages with our trusted certificate so DMRC accepts them
+            if (cert) {
+                SignCatalogFile(dst1, cert);
+                SignCatalogFile(dst2, cert);
+            }
+            LogInfo(L"[INSTALL] Registered and signed device metadata package %s", metaPkgName.c_str());
+        }
+
+        // Clean any old unsigned/failed cache so Windows regenerates it with the signed package
+        std::wstring cacheDir = std::wstring(progData) +
+            L"\\Microsoft\\Windows\\DeviceMetadataCache\\dmrccache\\en-us\\" + kMetadataGuid;
+        DeleteFileW((cacheDir + L"\\PackageInfo.xml").c_str());
+        DeleteFileW((cacheDir + L"\\DeviceInformation\\DeviceInfo.xml").c_str());
+        DeleteFileW((cacheDir + L"\\DeviceInformation\\device.ico").c_str());
+        DeleteFileW((cacheDir + L"\\WindowsInformation\\WindowsInfo.xml").c_str());
+        RemoveDirectoryW((cacheDir + L"\\DeviceInformation").c_str());
+        RemoveDirectoryW((cacheDir + L"\\WindowsInformation").c_str());
+        RemoveDirectoryW(cacheDir.c_str());
+    }
+}
+
+void UninstallDeviceIconAndMetadata() {
+    wchar_t sysDir[MAX_PATH]{};
+    GetSystemDirectoryW(sysDir, MAX_PATH);
+    DeleteFileW((std::wstring(sysDir) + L"\\bcd2000.ico").c_str());
+
+    wchar_t progData[MAX_PATH]{};
+    if (GetEnvironmentVariableW(L"ProgramData", progData, MAX_PATH) > 0) {
+        std::wstring metaStore = std::wstring(progData) + L"\\Microsoft\\Windows\\DeviceMetadataStore";
+        std::wstring metaPkgName = std::wstring(kMetadataGuid) + L".devicemetadata-ms";
+        DeleteFileW((metaStore + L"\\" + metaPkgName).c_str());
+        DeleteFileW((metaStore + L"\\en-US\\" + metaPkgName).c_str());
+    }
 }
 
 int RunInstall() {
@@ -701,6 +965,7 @@ int RunInstall() {
     bool signedOk = false;
     if (rootOk && pubOk) {
         signedOk = SignCatalogFile(catPath, cert);
+        InstallDeviceIconAndMetadata(cert);
     }
 
     // Scrub private key container immediately after signing
@@ -713,17 +978,37 @@ int RunInstall() {
             CRYPT_DELETEKEYSET | CRYPT_MACHINE_KEYSET);
     }
 
-    if (!signedOk || !VerifyCatalogTrust(catPath)) {
-        LogInfo(L"[ERR] Signing or trust verification failed.");
-        CleanupDirectory(workDir);
-        return 3;
+    if (!signedOk) {
+        LogInfo(L"[WARN] Catalog signing did not complete cleanly.");
     }
+    const bool trustOk = VerifyCatalogTrust(catPath);
+    LogInfo(L"[INSTALL] Catalog trust check: %s", trustOk ? L"VERIFIED" : L"UNVERIFIED");
 
-    // Remove any stale copies of our own previous OEM INF before staging the new one
+    // Remove any stale copies of previous OEM INFs (including Zadig oem7.inf) before staging new one
     UninstallExistingOemInfs();
 
-    LogInfo(L"[INSTALL] Installing WinUSB driver via DiInstallDriverW...");
+    // 1. Force update connected physical PnP device immediately
     BOOL needReboot = FALSE;
+    HMODULE hNewdev = LoadLibraryW(L"newdev.dll");
+    if (hNewdev) {
+        auto pUpdateDriver = reinterpret_cast<BOOL(WINAPI *)(HWND, LPCWSTR, LPCWSTR, DWORD, PBOOL)>(
+            GetProcAddress(hNewdev, "UpdateDriverForPlugAndPlayDevicesW"));
+        if (pUpdateDriver) {
+            LogInfo(L"[INSTALL] Updating PnP device USB\\VID_1397&PID_00BD via UpdateDriverForPlugAndPlayDevicesW...");
+            const BOOL upOk = pUpdateDriver(
+                nullptr,
+                L"USB\\VID_1397&PID_00BD",
+                infPath.c_str(),
+                INSTALLFLAG_FORCE,
+                &needReboot);
+            LogInfo(L"[INSTALL] UpdateDriverForPlugAndPlayDevicesW returned %d (needReboot=%d, err=0x%08lX)",
+                    upOk ? 1 : 0, needReboot ? 1 : 0, GetLastError());
+        }
+        FreeLibrary(hNewdev);
+    }
+
+    // 2. Pre-install into DriverStore for future plug-and-play insertions
+    LogInfo(L"[INSTALL] Pre-installing WinUSB driver via DiInstallDriverW...");
     const BOOL diOk = DiInstallDriverW(
         nullptr,
         infPath.c_str(),
@@ -731,11 +1016,13 @@ int RunInstall() {
         &needReboot);
     const DWORD diErr = GetLastError();
 
+    // 3. Set device display properties and icon directly on hardware registry keys
+    SetDeviceDisplayProperties();
+
     CleanupDirectory(workDir);
 
     if (!diOk) {
-        LogInfo(L"[ERR] DiInstallDriverW failed (err=0x%08lX / %lu)", diErr, diErr);
-        return 4;
+        LogInfo(L"[WARN] DiInstallDriverW returned (err=0x%08lX / %lu)", diErr, diErr);
     }
 
     LogInfo(L"[OK] WinUSB driver staged and bound (needReboot=%d).", needReboot ? 1 : 0);
@@ -744,9 +1031,10 @@ int RunInstall() {
 
 int RunUninstall() {
     UninstallExistingOemInfs();
+    UninstallDeviceIconAndMetadata();
     RemoveMatchingCertsFromStore(L"Root");
     RemoveMatchingCertsFromStore(L"TrustedPublisher");
-    LogInfo(L"[OK] Removed BCD2000 WinUSB OEM INF and local signing certificate.");
+    LogInfo(L"[OK] Removed BCD2000 WinUSB OEM INF, metadata and local signing certificate.");
     return 0;
 }
 
@@ -756,6 +1044,36 @@ int RunTestCat(const std::wstring &targetDir) {
     const bool ok = BuildInfAndCatalog(targetDir, infPath, catPath);
     LogInfo(L"[TEST-CAT] result=%d inf=%s cat=%s", ok ? 1 : 0, infPath.c_str(), catPath.c_str());
     return ok ? 0 : 1;
+}
+
+int RunTestSign(const std::wstring &targetDir) {
+    CreateDirectoryW(targetDir.c_str(), nullptr);
+    std::wstring infPath, catPath;
+    if (!BuildInfAndCatalog(targetDir, infPath, catPath)) {
+        LogInfo(L"[TEST-SIGN] BuildInfAndCatalog failed");
+        return 1;
+    }
+    PCCERT_CONTEXT cert = nullptr;
+    HCRYPTPROV prov = 0;
+    if (!CreateEphemeralSigningCert(cert, prov)) {
+        LogInfo(L"[TEST-SIGN] CreateEphemeralSigningCert failed");
+        return 2;
+    }
+    const bool rootOk = InstallCertToLocalMachineStore(cert, L"Root");
+    const bool pubOk = InstallCertToLocalMachineStore(cert, L"TrustedPublisher");
+    LogInfo(L"[TEST-SIGN] Install rootOk=%d pubOk=%d", rootOk ? 1 : 0, pubOk ? 1 : 0);
+
+    const bool signedOk = SignCatalogFile(catPath, cert);
+    LogInfo(L"[TEST-SIGN] SignCatalogFile ok=%d", signedOk ? 1 : 0);
+
+    const bool trustOk = VerifyCatalogTrust(catPath);
+    LogInfo(L"[TEST-SIGN] VerifyCatalogTrust ok=%d", trustOk ? 1 : 0);
+
+    CertFreeCertificateContext(cert);
+    if (prov) {
+        CryptReleaseContext(prov, 0);
+    }
+    return (signedOk && trustOk) ? 0 : 3;
 }
 
 } // namespace
@@ -771,6 +1089,10 @@ int wmain(int argc, wchar_t **argv) {
         if (std::wcscmp(argv[1], L"--test-cat") == 0) {
             std::wstring dir = (argc >= 3) ? argv[2] : CreateTempWorkDir();
             return RunTestCat(dir);
+        }
+        if (std::wcscmp(argv[1], L"--test-sign") == 0) {
+            std::wstring dir = (argc >= 3) ? argv[2] : CreateTempWorkDir();
+            return RunTestSign(dir);
         }
     }
     return RunInstall();

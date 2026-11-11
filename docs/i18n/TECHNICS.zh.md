@@ -28,7 +28,8 @@
 | **WinMM MIDI 设备名称** | `Behringer BCD2000 MIDI`（安装于 `System32` 与 `Drivers32`） |
 | **音频端点** | EP `0x02` 同步 OUT（4 通道 S16_LE @ 44.1 kHz），EP `0x83` 同步 IN（用于隐式 DAC 时钟跟踪） |
 | **控制 / MIDI 端点** | EP `0x01` OUT（64 字节封装帧，LED 与初始化），EP `0x81` IN（Running-Status MIDI 事件） |
-| **IPC 命名管道** | `\\.\pipe\BCD2000_ASIO_MIDI_V1`（双向 MIDI 桥接），`\\.\pipe\BCD2000_MIDI_CTRL_V1`（WinUSB 热交接 `'R' -> 'K'`） |
+| **IPC 与共享内存** | 命名管道：`\\.\pipe\BCD2000_ASIO_MIDI_V1`，`\\.\pipe\BCD2000_MIDI_CTRL_V1` · 共享内存：`Local\BCD2000_ASIO_SHARED_MEM_V1` |
+| **控制面板与仪表盘** | `bcd2000_control_panel.exe`（原生 Win32 暗黑主题、实时 VU 信号遥测、热调节矩阵 DSP） |
 
 ---
 
@@ -119,6 +120,15 @@ flowchart TB
 * **免 Zadig WinUSB 绑定（`bcd2000_winusb_setup.exe`）：** [`tools/bcd2000_winusb_setup.cpp`](../../tools/bcd2000_winusb_setup.cpp) 通过 `wintrust.dll` 生成并用本地 2048 位自签名证书签署 SHA-256 `.inf`/`.cat`，再调用 `DiInstallDriverW` 绑定。
 * **单文件 NSIS 安装器（`Behringer_BCD2000_Setup_x64.exe`）：** [`installer/bcd2000_setup.nsi`](../../installer/bcd2000_setup.nsi) 一键完成 WinUSB 绑定、ASIO COM 注册、`System32\bcd2000_midi.dll` 注册、工具部署与卸载支持。
 * **Mixxx 安全预设（`presets/mixxx/`）：** [`Behringer-BCD2000-safe-scripts.js`](../../presets/mixxx/Behringer-BCD2000-safe-scripts.js) 移除了启动全量旋钮查询（`0xB0 0x64 0x7F`）并增加逐 CC *soft-takeover*。
+
+### 阶段 7 — 交互式 64 位控制面板与实时仪表盘（`bcd2000_control_panel.exe`）
+* **挑战：** Steinberg ASIO 的 `IASIO::controlPanel()` 传统上仅弹出静态的 MessageBox，缺少对缓冲区大小、通道路由及信号监控的交互调节，且不能引入会破坏 `/MT` 静态链接的臃肿 UI 库。
+* **实现方案：** 开发原生 Win32 暗黑模式控制面板（`src/ui/bcd2000_control_panel_gui.cpp`、`tools/bcd2000_control_panel.cpp`），通过无锁共享内存（`Local\BCD2000_ASIO_SHARED_MEM_V1`）与 `bcd2000_asio.dll` 通信，并将设置持久化至注册表（`HKCU\Software\ASIO\Behringer BCD2000 ASIO 64-bit`）。
+* **功能特性：**
+  * **热重置延迟切换：** 支持通过 `kAsioResetRequest` 动态调整 ASIO 缓冲区大小（`64..4096` 采样点）。
+  * **实时 DSP 矩阵运算：** 主输出/耳机对调、耳机镜像监听、单声道混合与 0/-3/-6/-12 dB 数字防削顶增益调节，在播放过程中无缝生效。
+  * **实时信号遥测与 VU 电平：** 30 FPS 双缓冲动画立体声峰值表、环形缓冲占用率、晶振锁定状态指示及掉帧计数器。
+  * **双重启动架构：** 既可在宿主内调用 `IASIO::controlPanel()` 弹出，也可在 Windows 开始菜单独立启动。
 
 ---
 

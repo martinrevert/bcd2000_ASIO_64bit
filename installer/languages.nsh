@@ -248,3 +248,29 @@ LangString UN_DETAIL_WINUSB ${LANG_FRENCH}      "Nettoyage du paquet WinUSB..."
 LangString UN_DETAIL_WINUSB ${LANG_SIMPCHINESE} "正在清理 WinUSB 驱动程序包..."
 LangString UN_DETAIL_WINUSB ${LANG_JAPANESE}    "WinUSB パッケージをクリーンアップ中..."
 
+; ==============================================================================
+; 7. Active Host / File Lock Warning
+; ==============================================================================
+
+LangString MSG_DAW_RUNNING_LOCK ${LANG_ENGLISH} \
+  "The Behringer BCD2000 driver files are currently in use by an open audio application (such as Ableton Live, Mixxx, REAPER, or the Control Panel).$\r$\n$\r$\nPlease close your DAW / audio software and click Retry to continue the update."
+
+LangString MSG_DAW_RUNNING_LOCK ${LANG_SPANISH} \
+  "Los archivos del driver Behringer BCD2000 están actualmente en uso por una aplicación de audio abierta (como Ableton Live, Mixxx, REAPER o el Panel de Control).$\r$\n$\r$\nPor favor, cerrá tu DAW o software de audio y hacé clic en Reintentar para continuar con la actualización."
+
+LangString MSG_DAW_RUNNING_LOCK ${LANG_PORTUGUESEBR} \
+  "Os arquivos do driver Behringer BCD2000 estão atualmente em uso por um aplicativo de áudio aberto (como Ableton Live, Mixxx, REAPER ou o Painel de Controle).$\r$\n$\r$\nPor favor, feche sua DAW ou software de áudio e clique em Repetir para continuar a atualização."
+
+LangString MSG_DAW_RUNNING_LOCK ${LANG_GERMAN} \
+  "Die Behringer BCD2000 Treiberdateien werden derzeit von einer geöffneten Audioanwendung verwendet (z. B. Ableton Live, Mixxx, REAPER oder die Systemsteuerung).$\r$\n$\r$\nBitte schließen Sie Ihre DAW / Audiosoftware und klicken Sie auf Wiederholen, um das Update fortzusetzen."
+
+LangString MSG_DAW_RUNNING_LOCK ${LANG_FRENCH} \
+  "Les fichiers du pilote Behringer BCD2000 sont actuellement utilisés par une application audio ouverte (comme Ableton Live, Mixxx, REAPER ou le Panneau de configuration).$\r$\n$\r$\nVeuillez fermer votre DAW / logiciel audio et cliquer sur Réessayer pour continuer la mise à jour."
+
+LangString MSG_DAW_RUNNING_LOCK ${LANG_SIMPCHINESE} \
+  "Behringer BCD2000 驱动文件当前正被运行中的音频软件（如 Ableton Live、Mixxx、REAPER 或控制面板）占用。$\r$\n$\r$\n请关闭您的宿主软件 (DAW) 后点击“重试”以继续更新。"
+
+LangString MSG_DAW_RUNNING_LOCK ${LANG_JAPANESE} \
+  "Behringer BCD2000 ドライバ ファイルは現在、起動中のオーディオ アプリケーション（Ableton Live、Mixxx、REAPER、またはコントロールパネルなど）によって使用されています。$\r$\n$\r$\nDAW／オーディオ ソフトウェアを終了し、「再試行」をクリックして更新を続行してください。"
+
+

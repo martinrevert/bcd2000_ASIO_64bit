@@ -92,6 +92,13 @@ Bcd2000AsioDriver::~Bcd2000AsioDriver() {
     stop();
     disposeBuffers();
     CloseUsbHardware();
+    if (m_sharedState) {
+        m_sharedState->driverActive = 0;
+        m_sharedState->isRunning = 0;
+        bcd2000::CloseSharedState(m_hSharedMem, m_sharedState);
+        m_sharedState = nullptr;
+        m_hSharedMem = nullptr;
+    }
     g_ActiveComObjects.fetch_sub(1);
 }
 
@@ -368,6 +375,23 @@ void Bcd2000AsioDriver::SetStatusLeds(bool turnOn) {
     SendRawMidiToUsb(midi, sizeof(midi));
 }
 
+void Bcd2000AsioDriver::FlashHardwareLeds() {
+    if (!m_hMidiInterface || m_midiOutPipe == 0) {
+        return;
+    }
+    // Launch detached helper thread to sweep all 26 LEDs ON, wait 350 ms, then OFF
+    std::thread([this]() {
+        for (uint8_t cc = 0x00; cc <= 0x19; ++cc) {
+            SendLedCommand(cc, 0x7F);
+        }
+        Sleep(350);
+        for (uint8_t cc = 0x00; cc <= 0x19; ++cc) {
+            SendLedCommand(cc, 0x00);
+        }
+        SetStatusLeds(m_streamingActive.load(std::memory_order_relaxed));
+    }).detach();
+}
+
 bool Bcd2000AsioDriver::HasConnectedMidiClients() {
     std::lock_guard<std::mutex> lock(m_midiClientsMutex);
     return !m_midiClients.empty();
@@ -606,9 +630,30 @@ ASIOBool Bcd2000AsioDriver::init(void *sysHandle) {
         return ASIOTrue;
     }
 
+    // Open or create shared memory state for control panel IPC
+    m_sharedState = bcd2000::OpenOrCreateSharedState(&m_hSharedMem, true);
+    if (m_sharedState) {
+        m_sharedState->driverActive = 1;
+        m_sharedState->activePid = GetCurrentProcessId();
+
+        wchar_t path[MAX_PATH]{};
+        if (GetModuleFileNameW(nullptr, path, MAX_PATH) > 0) {
+            const wchar_t *fname = std::wcsrchr(path, L'\\');
+            if (fname) fname++; else fname = path;
+            std::wcsncpy(m_sharedState->dawProcessName, fname, 63);
+        }
+
+        m_bufferSize = m_sharedState->bufferSize;
+        m_preferredBufSize = m_bufferSize;
+    }
+
     // Open the physical BCD2000 via WinUSB (falls back gracefully to timer clock
     // if run in an environment without the USB hardware attached)
     OpenUsbHardware();
+
+    if (m_sharedState) {
+        m_sharedState->hardwareConnected = m_hardwareConnected ? 1 : 0;
+    }
 
     m_state = DriverState::Initialized;
     return ASIOTrue;
@@ -658,8 +703,8 @@ ASIOError Bcd2000AsioDriver::getBufferSize(long *minSize, long *maxSize,
         return ASE_InvalidParameter;
     }
     *minSize = kMinBufferSize;         // 64 samples (~1.45 ms)
-    *maxSize = kMaxBufferSize;         // 512 samples (~11.6 ms)
-    *preferredSize = kPreferredBufSize; // 256 samples (~5.80 ms)
+    *maxSize = kMaxBufferSize;         // 4096 samples (~92.88 ms)
+    *preferredSize = m_preferredBufSize; // Dynamically returns user-configured preferred size
     *granularity = kBufferGranularity; // 64 samples
     return ASE_OK;
 }
@@ -906,6 +951,13 @@ ASIOError Bcd2000AsioDriver::start() {
     m_streamingActive.store(true, std::memory_order_release);
     m_state = DriverState::Running;
 
+    if (m_sharedState) {
+        m_sharedState->isRunning = 1;
+        m_sharedState->sampleRate = m_sampleRate;
+        m_sharedState->bufferSize = static_cast<int32_t>(m_bufferSize);
+        m_sharedState->hardwareConnected = m_hardwareConnected ? 1 : 0;
+    }
+
     // Launch decoupled real-time threads:
     // 1. AsioHostThread: drives DAW host bufferSwitch callbacks and fills the ring buffer
     // 2. UsbStreamingThread: drives continuous USB Isochronous Endpoint 0x02 OUT transfers
@@ -921,6 +973,10 @@ ASIOError Bcd2000AsioDriver::start() {
 ASIOError Bcd2000AsioDriver::stop() {
     if (m_state != DriverState::Running) {
         return ASE_OK;
+    }
+
+    if (m_sharedState) {
+        m_sharedState->isRunning = 0;
     }
 
     m_streamingActive.store(false, std::memory_order_release);
@@ -950,27 +1006,7 @@ ASIOError Bcd2000AsioDriver::stop() {
 }
 
 ASIOError Bcd2000AsioDriver::controlPanel() {
-    char msg[512];
-    std::snprintf(
-        msg, sizeof(msg),
-        "Behringer BCD2000 ASIO 64-bit Driver (v2.3)\n"
-        "--------------------------------------------------\n"
-        "Hardware Status : %s\n"
-        "Sample Rate     : %.0f Hz (Supported: 32k, 44.1k, 48k, 88.2k, 96k)\n"
-        "Sample Format   : 16-bit Signed PCM Little-Endian (ASIOSTInt16LSB)\n"
-        "ASIO Buffer Size: %ld samples (%.2f ms)\n"
-        "Output Channels : 4 (Ch 1-2 Master RCA, Ch 3-4 Headphones)\n"
-        "Input Channels  : 4 (Ch 1-2 Deck A/Mic, Ch 3-4 Deck B)\n"
-        "Transport Layer : WinUSB.sys Isochronous (EP 0x02 OUT)\n"
-        "Engine Mode     : Decoupled Dual-Thread (MMCSS Pro Audio)",
-        m_hardwareConnected ? "CONNECTED (VID 0x1397, PID 0x00BD)"
-                            : "DISCONNECTED (Timer Simulation)",
-        m_sampleRate, m_bufferSize,
-        (static_cast<double>(m_bufferSize) * 1000.0) / m_sampleRate);
-
-    MessageBoxA(static_cast<HWND>(m_sysHandle), msg,
-                "Behringer BCD2000 ASIO 64-bit Control Panel",
-                MB_OK | MB_ICONINFORMATION);
+    bcd2000::ShowBcd2000ControlPanel(static_cast<HWND>(m_sysHandle), false, this);
     return ASE_OK;
 }
 
@@ -1041,12 +1077,96 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
         m_callbacks.bufferSwitch(bufIdx, ASIOTrue);
     }
 
+    // Process control panel triggers & commands
+    if (m_sharedState) {
+        if (m_sharedState->resetGlitchCounter) {
+            m_xrunCount.store(0, std::memory_order_relaxed);
+            m_sharedState->xrunCount = 0;
+            m_sharedState->resetGlitchCounter = 0;
+        }
+        if (m_sharedState->flashLedsTrigger) {
+            m_sharedState->flashLedsTrigger = 0;
+            FlashHardwareLeds();
+        }
+        if (m_sharedState->requestedBufferSize != 0) {
+            long req = static_cast<long>(m_sharedState->requestedBufferSize);
+            m_sharedState->requestedBufferSize = 0;
+            if (req >= kMinBufferSize && req <= kMaxBufferSize && req != m_bufferSize) {
+                m_preferredBufSize = req;
+                if (m_callbacks.asioMessage) {
+                    m_callbacks.asioMessage(kAsioResetRequest, 0, nullptr, nullptr);
+                }
+            }
+        }
+    }
+
+    const int routingMode = m_sharedState ? m_sharedState->routingMode : 0;
+    const bool monoDownmix = m_sharedState ? (m_sharedState->monoDownmix != 0) : false;
+    const int trimDb = m_sharedState ? m_sharedState->outputTrimDb : 0;
+    const bool masterMute = m_sharedState ? (m_sharedState->masterMute != 0) : false;
+    const bool phonesMute = m_sharedState ? (m_sharedState->phonesMute != 0) : false;
+
+    // Fixed-point scale factor for digital trim (0, -3, -6, -12 dB)
+    int32_t trimMult = 32768; // 0 dB unity
+    if (trimDb == -3) trimMult = 23170;       // -3.0 dB (~0.707)
+    else if (trimDb == -6) trimMult = 16422;  // -6.0 dB (~0.501)
+    else if (trimDb == -12) trimMult = 8232;  // -12.0 dB (~0.251)
+
     // Interleave the 4 non-interleaved 16-bit ASIO output channels (ASIOSTInt16LSB)
     // into m_outRingBuffer (4-channel interleaved S16_LE).
     const int16_t *ch0 = m_outputActive[0] ? m_outputStorage[0][bufIdx].data() : nullptr;
     const int16_t *ch1 = m_outputActive[1] ? m_outputStorage[1][bufIdx].data() : nullptr;
     const int16_t *ch2 = m_outputActive[2] ? m_outputStorage[2][bufIdx].data() : nullptr;
     const int16_t *ch3 = m_outputActive[3] ? m_outputStorage[3][bufIdx].data() : nullptr;
+
+    int16_t maxPk0 = 0, maxPk1 = 0, maxPk2 = 0, maxPk3 = 0;
+
+    auto ProcessOutputFrame = [&](long s, int16_t &o0, int16_t &o1, int16_t &o2, int16_t &o3) {
+        int16_t in0 = ch0 ? ch0[s] : 0;
+        int16_t in1 = ch1 ? ch1[s] : 0;
+        int16_t in2 = ch2 ? ch2[s] : 0;
+        int16_t in3 = ch3 ? ch3[s] : 0;
+
+        if (routingMode == bcd2000::Routing_Swap) {
+            o0 = in2; o1 = in3;
+            o2 = in0; o3 = in1;
+        } else if (routingMode == bcd2000::Routing_Mirror) {
+            o0 = in0; o1 = in1;
+            o2 = in0; o3 = in1;
+        } else {
+            o0 = in0; o1 = in1;
+            o2 = in2; o3 = in3;
+        }
+
+        if (monoDownmix) {
+            int32_t m = (static_cast<int32_t>(o0) + static_cast<int32_t>(o1)) / 2;
+            o0 = static_cast<int16_t>(m);
+            o1 = static_cast<int16_t>(m);
+        }
+
+        if (trimMult < 32768) {
+            o0 = static_cast<int16_t>((static_cast<int32_t>(o0) * trimMult) >> 15);
+            o1 = static_cast<int16_t>((static_cast<int32_t>(o1) * trimMult) >> 15);
+            o2 = static_cast<int16_t>((static_cast<int32_t>(o2) * trimMult) >> 15);
+            o3 = static_cast<int16_t>((static_cast<int32_t>(o3) * trimMult) >> 15);
+        }
+
+        if (masterMute) {
+            o0 = 0; o1 = 0;
+        }
+        if (phonesMute) {
+            o2 = 0; o3 = 0;
+        }
+
+        int16_t a0 = (o0 < 0) ? -o0 : o0;
+        int16_t a1 = (o1 < 0) ? -o1 : o1;
+        int16_t a2 = (o2 < 0) ? -o2 : o2;
+        int16_t a3 = (o3 < 0) ? -o3 : o3;
+        if (a0 > maxPk0) maxPk0 = a0;
+        if (a1 > maxPk1) maxPk1 = a1;
+        if (a2 > maxPk2) maxPk2 = a2;
+        if (a3 > maxPk3) maxPk3 = a3;
+    };
 
     const size_t mask = kRingCapacityFrames - 1;
     uint64_t writeIdx = m_ringWriteFrames.load(std::memory_order_relaxed);
@@ -1064,26 +1184,31 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
     if (exactRateMatch) {
         for (long s = 0; s < m_bufferSize; ++s) {
             const size_t slot = static_cast<size_t>(writeIdx & mask) * 4;
-            m_outRingBuffer[slot + 0] = ch0 ? ch0[s] : 0;
-            m_outRingBuffer[slot + 1] = ch1 ? ch1[s] : 0;
-            m_outRingBuffer[slot + 2] = ch2 ? ch2[s] : 0;
-            m_outRingBuffer[slot + 3] = ch3 ? ch3[s] : 0;
+            int16_t o0, o1, o2, o3;
+            ProcessOutputFrame(s, o0, o1, o2, o3);
+            m_outRingBuffer[slot + 0] = o0;
+            m_outRingBuffer[slot + 1] = o1;
+            m_outRingBuffer[slot + 2] = o2;
+            m_outRingBuffer[slot + 3] = o3;
             writeIdx++;
         }
     } else {
         const double step = m_sampleRate / usbTargetRate;
 
         for (long s = 0; s < m_bufferSize; ++s) {
+            int16_t o0, o1, o2, o3;
+            ProcessOutputFrame(s, o0, o1, o2, o3);
+
             // Shift 4-sample history window and push current input sample
             for (int i = 0; i < 3; ++i) {
                 for (int c = 0; c < kNumOutputs; ++c) {
                     m_resampleHistory[i][c] = m_resampleHistory[i + 1][c];
                 }
             }
-            m_resampleHistory[3][0] = ch0 ? ch0[s] : 0;
-            m_resampleHistory[3][1] = ch1 ? ch1[s] : 0;
-            m_resampleHistory[3][2] = ch2 ? ch2[s] : 0;
-            m_resampleHistory[3][3] = ch3 ? ch3[s] : 0;
+            m_resampleHistory[3][0] = o0;
+            m_resampleHistory[3][1] = o1;
+            m_resampleHistory[3][2] = o2;
+            m_resampleHistory[3][3] = o3;
 
             while (m_resamplePhase < 1.0) {
                 const double t = m_resamplePhase;
@@ -1110,6 +1235,17 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
             }
             m_resamplePhase -= 1.0;
         }
+    }
+
+    if (m_sharedState) {
+        int16_t old0 = (m_sharedState->peakMasterL * 9) / 10;
+        int16_t old1 = (m_sharedState->peakMasterR * 9) / 10;
+        int16_t old2 = (m_sharedState->peakPhonesL * 9) / 10;
+        int16_t old3 = (m_sharedState->peakPhonesR * 9) / 10;
+        m_sharedState->peakMasterL = (std::max)(maxPk0, old0);
+        m_sharedState->peakMasterR = (std::max)(maxPk1, old1);
+        m_sharedState->peakPhonesL = (std::max)(maxPk2, old2);
+        m_sharedState->peakPhonesR = (std::max)(maxPk3, old3);
     }
 
     m_ringWriteFrames.store(writeIdx, std::memory_order_release);
@@ -1140,13 +1276,17 @@ void Bcd2000AsioDriver::AsioHostThreadMain() {
     }
     m_prefillReady.store(true, std::memory_order_release);
 
-    const size_t targetHeadroomFrames =
-        std::max<size_t>(2048, static_cast<size_t>(m_bufferSize * 3));
-
     while (m_streamingActive.load(std::memory_order_acquire)) {
         const uint64_t writeIdx = m_ringWriteFrames.load(std::memory_order_acquire);
         const uint64_t readIdx = m_ringReadFrames.load(std::memory_order_acquire);
         const size_t buffered = (writeIdx >= readIdx) ? static_cast<size_t>(writeIdx - readIdx) : 0;
+
+        int hrMultiplier = m_sharedState ? m_sharedState->safetyHeadroom : 3;
+        if (hrMultiplier < 1) hrMultiplier = 1;
+        if (hrMultiplier > 5) hrMultiplier = 5;
+        const size_t targetHeadroomFrames =
+            std::max<size_t>(static_cast<size_t>(512 * hrMultiplier),
+                             static_cast<size_t>(m_bufferSize * hrMultiplier));
 
         if (buffered < targetHeadroomFrames) {
             InvokeHostBufferSwitch();
@@ -1371,6 +1511,12 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
                         inFramesPerMs.store(fpm, std::memory_order_release);
                         m_usbTargetRate.store(fpm * 1000.0, std::memory_order_release);
                         inClockLocked.store(true, std::memory_order_release);
+                        if (m_sharedState) {
+                            m_sharedState->liveDacRate = fpm * 1000.0;
+                            m_sharedState->clockLocked = 1;
+                            double diff = (fpm * 1000.0) - m_sampleRate;
+                            m_sharedState->clockDriftPpm = (diff / m_sampleRate) * 1.0e6;
+                        }
                     }
                 } else {
                     continueIn = false;
@@ -1411,6 +1557,13 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
     m_exactModeActive.store(useExact44100, std::memory_order_release);
     m_usbTargetRate.store(actualUsbRate, std::memory_order_release);
     m_usbRateReady.store(true, std::memory_order_release);
+
+    if (m_sharedState) {
+        m_sharedState->liveDacRate = actualUsbRate;
+        m_sharedState->clockLocked = (inClockLocked.load(std::memory_order_acquire) || !useExact44100) ? 1 : 0;
+        double diff = actualUsbRate - m_sampleRate;
+        m_sharedState->clockDriftPpm = (diff / m_sampleRate) * 1.0e6;
+    }
 
     struct UrbSlot {
         OVERLAPPED ov{};
@@ -1526,6 +1679,10 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
             m_ringReadFrames.store(readIdx + framesInSlot, std::memory_order_release);
         } else {
             // Buffer starvation protection: copy available frames, fill rest with silence
+            m_xrunCount.fetch_add(1, std::memory_order_relaxed);
+            if (m_sharedState) {
+                m_sharedState->xrunCount = m_xrunCount.load(std::memory_order_relaxed);
+            }
             for (size_t f = 0; f < available; ++f) {
                 const size_t ringSlot = static_cast<size_t>((readIdx + f) & mask) * 4;
                 dst[f * 4 + 0] = m_outRingBuffer[ringSlot + 0];
@@ -1535,6 +1692,11 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
             }
             std::memset(dst + available * 4, 0, (framesInSlot - available) * 8);
             m_ringReadFrames.store(readIdx + available, std::memory_order_release);
+        }
+
+        if (m_sharedState) {
+            m_sharedState->ringFillPercent =
+                static_cast<uint32_t>((available * 100) / kRingCapacityFrames);
         }
 
         // Signal ASIO host callback thread to replenish ring buffer

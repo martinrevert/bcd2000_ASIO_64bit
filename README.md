@@ -52,6 +52,13 @@ Here is the plain truth:
   * Low-latency real-time streaming with hardware clock tracking to keep playback crisp and click-free.
 * **Simultaneous 64-bit MIDI IN & OUT (`Behringer BCD2000 MIDI`):**
   * Full support for faders, knobs, jog wheels, buttons, and **bi-directional LED feedback**—working **at the exact same time** as ASIO audio without exclusive-access conflicts.
+* **Interactive 64-bit Control Panel & Live Dashboard (`bcd2000_control_panel.exe`):**
+  * Accessible from your DAW's audio settings (*"Control Panel"*) or as a standalone desktop application from the Windows Start Menu.
+  * **On-The-Fly Audio Routing:** Swap Master RCA (Ch 1-2) with Front Headphones (Ch 3-4), mirror Master to Headphones (Cue follows Master), or enable Mono Downmix.
+  * **Instant Buffer Size & Latency Selection:** Choose between 64 and 4096 samples with automatic transparent Hot-Reset (`kAsioResetRequest`).
+  * **Digital Output Trim & Mutes:** Protect against DAC clipping with 0 dB, -3 dB, -6 dB, or -12 dB digital headroom pads.
+  * **Real-Time Signal Telemetry & Peak Meters:** Animated stereo VU peak meters, ring buffer fill gauge (%), and live glitch/dropout counter with zero-dropout verification.
+  * **Hardware Diagnostic Tools:** "Flash LEDs" button to test all 26 physical LEDs on the BCD2000.
 * **One-Click Installer (`Behringer_BCD2000_Setup_x64.exe`):**
   * Automatically binds Windows' native `WinUSB` driver to your BCD2000 (you **do not** need to download or configure Zadig manually).
   * Registers both the 64-bit ASIO driver and the 64-bit Windows MIDI driver cleanly with a standard uninstaller.

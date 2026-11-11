@@ -1,0 +1,14 @@
+; Behringer BCD2000 Device Metadata Package DDF
+.Set CabinetNameTemplate=b2d20000-1397-00bd-a510-000000000064.devicemetadata-ms
+.Set DiskDirectoryTemplate=installer\metadata
+.Set CompressionType=MSZIP
+.Set UniqueFiles="OFF"
+.Set Cabinet=ON
+.Set DestinationDir=
+installer\metadata\PackageInfo.xml
+.Set DestinationDir=DeviceInformation
+installer\metadata\DeviceInformation\DeviceInfo.xml
+installer\metadata\DeviceInformation\device.ico
+.Set DestinationDir=WindowsInformation
+installer\metadata\WindowsInformation\WindowsInfo.xml
+

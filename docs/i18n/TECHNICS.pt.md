@@ -28,7 +28,8 @@ Em vez de escrever um driver `.sys` em modo kernel, este projeto implementa uma 
 | **Nome do Dispositivo WinMM MIDI** | `Behringer BCD2000 MIDI` (instalado em `System32` e `Drivers32`) |
 | **Endpoints de Áudio** | EP `0x02` Isócrono OUT (4 ch S16_LE @ 44,1 kHz), EP `0x83` Isócrono IN (rastreamento implícito do clock DAC) |
 | **Endpoints Controle / MIDI** | EP `0x01` OUT (pacotes de 64 bytes, LEDs e init), EP `0x81` IN (eventos MIDI Running Status) |
-| **Named Pipes IPC** | `\\.\pipe\BCD2000_ASIO_MIDI_V1` (ponte MIDI bidirecional), `\\.\pipe\BCD2000_MIDI_CTRL_V1` (handoff WinUSB `'R' -> 'K'`) |
+| **IPC e Memória Compartilhada** | Named Pipes: `\\.\pipe\BCD2000_ASIO_MIDI_V1`, `\\.\pipe\BCD2000_MIDI_CTRL_V1` · Memória Compartilhada: `Local\BCD2000_ASIO_SHARED_MEM_V1` |
+| **Painel de Controle e Dashboard** | `bcd2000_control_panel.exe` (Win32 Dark Mode nativo, telemetria VU em tempo real, matriz DSP em tempo real) |
 
 ---
 
@@ -120,6 +121,15 @@ Este projeto evoluiu a partir da matriz incremental documentada em [`docs/ROADMA
 * **Vínculo WinUSB sem Zadig (`bcd2000_winusb_setup.exe`):** [`tools/bcd2000_winusb_setup.cpp`](../../tools/bcd2000_winusb_setup.cpp) cria e assina localmente `.inf`/`.cat` SHA-256 via `wintrust.dll` + `DiInstallDriverW`.
 * **Instalador Único NSIS (`Behringer_BCD2000_Setup_x64.exe`):** [`installer/bcd2000_setup.nsi`](../../installer/bcd2000_setup.nsi) automatiza WinUSB, ASIO COM, `System32\bcd2000_midi.dll`, ferramentas e desinstalação.
 * **Preset Seguro Mixxx (`presets/mixxx/`):** [`Behringer-BCD2000-safe-scripts.js`](../../presets/mixxx/Behringer-BCD2000-safe-scripts.js) omite o dump inicial (`0xB0 0x64 0x7F`) e aplica *soft-takeover*.
+
+### Fase 7 — Painel de Controle Interativo e Dashboard em Tempo Real (`bcd2000_control_panel.exe`)
+* **Desafio:** Historicamente, `IASIO::controlPanel()` exibia apenas caixas estáticas de diálogo, sem opções de alteração de buffer, roteamento ou telemetria, e sem introduzir bibliotecas gráficas pesadas que quebrassem o modo `/MT`.
+* **Implementação:** Desenvolvido um painel nativo Win32 Dark Mode (`src/ui/bcd2000_control_panel_gui.cpp`, `tools/bcd2000_control_panel.cpp`) comunicando com `bcd2000_asio.dll` por memória compartilhada lock-free (`Local\BCD2000_ASIO_SHARED_MEM_V1`) e registro do Windows (`HKCU\Software\ASIO\Behringer BCD2000 ASIO 64-bit`).
+* **Recursos:**
+  * **Latência com Hot-Reset:** Redimensionamento dinâmico de buffers ASIO (`64..4096` amostras) via `kAsioResetRequest`.
+  * **DSP em Tempo Real:** Troca Master/Fones, espelhamento para fones, downmix mono e atenuação digital 0/-3/-6/-12 dB avaliados sem interrupção de áudio.
+  * **Telemetria e VU Meters:** Vumétros estéreo animados a 30 FPS, medidor do buffer circular, indicador de clock travado e contador de dropouts/xruns.
+  * **Arquitetura de Dupla Execução:** Acionado pelo DAW via `IASIO::controlPanel()` ou de forma independente pelo Menu Iniciar do Windows.
 
 ---
 

@@ -1,0 +1,35 @@
+; Behringer BCD2000 WinUSB Driver Package (Windows 10/11 x64)
+[Version]
+Signature   = "$Windows NT$"
+Class       = USBDevice
+ClassGuid   = {88BAE032-5A81-49F0-BC3D-A4FF138216D6}
+Provider    = %ManufacturerName%
+CatalogFile = bcd2000_winusb.cat
+DriverVer   = 11/10/2026,2.0.0.0
+
+[Manufacturer]
+%ManufacturerName% = Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceName% = USB_Install, USB\VID_1397&PID_00BD
+
+[USB_Install]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[USB_Install.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[USB_Install.HW]
+AddReg = Dev_AddReg
+
+[Dev_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{DEE824EF-729B-4A0E-9C14-B7117D33A817}"
+HKR,,DeviceDisplayIcon,0x00020000,"%SystemRoot%\System32\bcd2000.ico"
+HKR,,DeviceCategory,0x00010000,"Audio.DJController","Audio"
+HKR,,FriendlyName,0x00000000,"%DeviceName%"
+
+[Strings]
+ManufacturerName = "Behringer"
+DeviceName       = "Behringer BCD2000 DJ Controller"

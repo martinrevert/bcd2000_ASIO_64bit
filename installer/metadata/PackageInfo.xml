@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageInfo xmlns="http://schemas.microsoft.com/windows/DeviceMetadata/PackageInfo/2007/11/">
+  <MetadataKey>
+    <HardwareIDList>
+      <HardwareID>DOID:USB\VID_1397&amp;PID_00BD</HardwareID>
+      <HardwareID>DOID:USB\VID_1397&amp;PID_00bd</HardwareID>
+      <HardwareID>DOID:usb\vid_1397&amp;pid_00bd</HardwareID>
+    </HardwareIDList>
+    <Locale default="true">en-US</Locale>
+    <LastModifiedDate>2026-11-11T00:00:00z</LastModifiedDate>
+  </MetadataKey>
+  <PackageStructure>
+    <Metadata MetadataID="http://schemas.microsoft.com/windows/DeviceMetadata/PackageInfo/2007/11/">PackageInfo.xml</Metadata>
+    <Metadata MetadataID="http://schemas.microsoft.com/windows/DeviceMetadata/DeviceInfo/2007/11/">DeviceInformation</Metadata>
+    <Metadata MetadataID="http://schemas.microsoft.com/windows/DeviceMetadata/WindowsInfo/2007/11/">WindowsInformation</Metadata>
+  </PackageStructure>
+  <Relationships>
+    <ExperienceID>b2d20000-1397-00bd-a510-000000000064</ExperienceID>
+  </Relationships>
+</PackageInfo>
+

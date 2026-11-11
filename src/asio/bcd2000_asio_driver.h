@@ -42,6 +42,8 @@
 #include <vector>
 
 #include "../common/bcd2000_usb_protocol.h"
+#include "../common/bcd2000_shared_state.h"
+#include "../ui/bcd2000_control_panel_gui.h"
 #include "../../third_party/asio-sdk/common/iasiodrv.h"
 
 extern std::atomic<long> g_ActiveComObjects;
@@ -100,6 +102,7 @@ private:
     void CloseUsbHardware();
     bool SendLedCommand(uint8_t cc, uint8_t value);
     void SetStatusLeds(bool turnOn);
+    void FlashHardwareLeds();
     bool SendRawMidiToUsb(const uint8_t *data, size_t len);
     void StartMidiBridge();
     void StopMidiBridge();
@@ -121,6 +124,10 @@ private:
     // Audio configuration
     double m_sampleRate{kDefaultSampleRate};
     long m_bufferSize{kPreferredBufSize};
+    long m_preferredBufSize{kPreferredBufSize};
+    HANDLE m_hSharedMem{nullptr};
+    bcd2000::Bcd2000SharedState *m_sharedState{nullptr};
+    std::atomic<uint64_t> m_xrunCount{0};
     ASIOCallbacks m_callbacks{};
     bool m_supportsTimeInfo{false};
     ASIOTime m_asioTime{};

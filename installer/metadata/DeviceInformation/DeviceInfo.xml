@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<DeviceInfo xmlns="http://schemas.microsoft.com/windows/DeviceMetadata/DeviceInfo/2007/11/">
+  <DeviceCategoryList>
+    <DeviceCategory>Audio</DeviceCategory>
+    <DeviceCategory>Audio.Adapter</DeviceCategory>
+  </DeviceCategoryList>
+  <ModelName>BCD2000</ModelName>
+  <ModelNumber>BCD2000 DJ Controller</ModelNumber>
+  <DeviceDescription1>Behringer BCD2000 USB DJ Controller &amp; 4-Channel 64-bit Audio Interface</DeviceDescription1>
+  <Manufacturer>Behringer</Manufacturer>
+  <DeviceIconFile>device.ico</DeviceIconFile>
+</DeviceInfo>
+

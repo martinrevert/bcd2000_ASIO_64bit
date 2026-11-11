@@ -28,7 +28,8 @@
 | **WinMM MIDI デバイス名** | `Behringer BCD2000 MIDI`（`System32` & `Drivers32` に登録） |
 | **オーディオ EP** | EP `0x02` アイソクロナス OUT（4ch S16_LE @ 44.1 kHz）、EP `0x83` アイソクロナス IN（暗黙的 DAC クロック追従用） |
 | **制御 / MIDI EP** | EP `0x01` OUT（64 バイトフレーム、LED & 初期化）、EP `0x81` IN（Running-Status MIDI イベント） |
-| **IPC 名前付きパイプ** | `\\.\pipe\BCD2000_ASIO_MIDI_V1`（双方向 MIDI ブリッジ）、`\\.\pipe\BCD2000_MIDI_CTRL_V1`（WinUSB ハンドオフ `'R' -> 'K'`） |
+| **IPC & 共有メモリ** | 名前付きパイプ：`\\.\pipe\BCD2000_ASIO_MIDI_V1`，`\\.\pipe\BCD2000_MIDI_CTRL_V1` · 共有メモリ：`Local\BCD2000_ASIO_SHARED_MEM_V1` |
+| **コントロールパネル＆ダッシュボード** | `bcd2000_control_panel.exe`（Win32 ネイティブ Dark Mode、リアルタイム VU テレメトリ、動的マトリクス DSP） |
 
 ---
 
@@ -119,6 +120,15 @@ flowchart TB
 * **Zadig 不要の WinUSB 導入（`bcd2000_winusb_setup.exe`）：** [`tools/bcd2000_winusb_setup.cpp`](../../tools/bcd2000_winusb_setup.cpp) が `wintrust.dll` で SHA-256 `.inf`/`.cat` を生成・ローカル署名し、`DiInstallDriverW` で自動適用します。
 * **単一 EXE インストーラー（`Behringer_BCD2000_Setup_x64.exe`）：** [`installer/bcd2000_setup.nsi`](../../installer/bcd2000_setup.nsi) が WinUSB、ASIO COM、`System32\bcd2000_midi.dll`、診断ツール、アンインストーラーを一括導入します。
 * **Mixxx セーフ・プリセット（`presets/mixxx/`）：** [`Behringer-BCD2000-safe-scripts.js`](../../presets/mixxx/Behringer-BCD2000-safe-scripts.js) は起動時一括ダンプ（`0xB0 0x64 0x7F`）を省き、各 CC に *soft-takeover* を適用します。
+
+### フェーズ 7 — 対話型 64-bit コントロールパネル＆ライブダッシュボード（`bcd2000_control_panel.exe`）
+* **課題：** Steinberg ASIO の `IASIO::controlPanel()` は従来静的な MessageBox を表示するのみで、バッファーサイズやルーティング、テレメトリの対話的変更ができず、また `/MT` 静的リンクを阻害する重厚な UI ライブラリの導入も避けなければなりませんでした。
+* **実装内容：** ネイティブ Win32 Dark Mode コントロールパネル（`src/ui/bcd2000_control_panel_gui.cpp`, `tools/bcd2000_control_panel.cpp`）を開発。ロックフリー共有メモリ（`Local\BCD2000_ASIO_SHARED_MEM_V1`）を介して `bcd2000_asio.dll` と連携し、Windows レジストリ（`HKCU\Software\ASIO\Behringer BCD2000 ASIO 64-bit`）に設定を永続化。
+* **主な機能：**
+  * **ホットリセット・レイテンシー切り替え：** `kAsioResetRequest` による ASIO バッファーサイズ（`64..4096` サンプル）の動的変更。
+  * **動的 DSP マトリクス：** Master/ヘッドホンの瞬時スワップ、ヘッドホンへのミラーリング、Mono ダウンミックス、0/-3/-6/-12 dB デジタルヘッドルームを再生停止なしで適用。
+  * **リアルタイム・テレメトリ：** ダブルバッファー 30 FPS アニメーション VU ピークメーター、リングバッファー占有率、クロックロック状態表示、ドロップアウト検出カウンター。
+  * **デュアル起動アーキテクチャ：** DAW からの `IASIO::controlPanel()` 呼び出しと、Windows スタートメニューからのスタンドアロン起動の双方に対応。
 
 ---
 

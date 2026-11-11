@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Behringer BCD2000 64-bit ASIO and MIDI Driver Suite
+// Application Icon Resource
+
+#include <windows.h>
+
+1 ICON "bcd2000.ico"
+
