@@ -631,6 +631,8 @@ ASIOError Bcd2000AsioDriver::start() {
     std::fill(m_outRingBuffer.begin(), m_outRingBuffer.end(), static_cast<int16_t>(0));
 
     m_hAsioTriggerEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    m_usbRateReady.store(false, std::memory_order_release);
+    m_usbTargetRate.store(kDefaultSampleRate, std::memory_order_release);
     m_prefillReady.store(false, std::memory_order_release);
     m_streamingActive.store(true, std::memory_order_release);
     m_state = DriverState::Running;
@@ -774,49 +776,62 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
     const size_t mask = kRingCapacityFrames - 1;
     uint64_t writeIdx = m_ringWriteFrames.load(std::memory_order_relaxed);
 
-    // Rate pacing: USB Endpoint 0x02 consumes 45 frames per 1 ms frame (45,000 frames/sec).
-    // To maintain bit-perfect FIFO equilibrium without starvation or buffer buildup,
-    // we resample from the host's selected sample rate (m_sampleRate) to 45,000 Hz
-    // using continuous 4-point Hermite cubic interpolation.
-    constexpr double kUsbEffectiveRate = 45000.0;
-    const double step = m_sampleRate / kUsbEffectiveRate;
+    // Match production rate to the active USB transport rate determined by UsbStreamingThreadMain
+    // (exact 44,100 Hz with 352/360-byte packets, or BytesPerInterval-derived rate on fallback).
+    // When host ASIO rate equals active USB rate (e.g. 44.1 kHz -> 44.1 kHz), perform a bit-exact
+    // 1:1 copy without resampling; otherwise resample with 4-point Hermite cubic interpolation.
+    const double usbTargetRate = m_usbTargetRate.load(std::memory_order_acquire);
+    const bool exactRateMatch = (std::abs(m_sampleRate - usbTargetRate) < 0.01);
 
-    for (long s = 0; s < m_bufferSize; ++s) {
-        // Shift 4-sample history window and push current input sample
-        for (int i = 0; i < 3; ++i) {
-            for (int c = 0; c < kNumOutputs; ++c) {
-                m_resampleHistory[i][c] = m_resampleHistory[i + 1][c];
-            }
-        }
-        m_resampleHistory[3][0] = ch0 ? ch0[s] : 0;
-        m_resampleHistory[3][1] = ch1 ? ch1[s] : 0;
-        m_resampleHistory[3][2] = ch2 ? ch2[s] : 0;
-        m_resampleHistory[3][3] = ch3 ? ch3[s] : 0;
-
-        while (m_resamplePhase < 1.0) {
-            const double t = m_resamplePhase;
+    if (exactRateMatch) {
+        for (long s = 0; s < m_bufferSize; ++s) {
             const size_t slot = static_cast<size_t>(writeIdx & mask) * 4;
-            for (int c = 0; c < kNumOutputs; ++c) {
-                const double y0 = static_cast<double>(m_resampleHistory[0][c]);
-                const double y1 = static_cast<double>(m_resampleHistory[1][c]);
-                const double y2 = static_cast<double>(m_resampleHistory[2][c]);
-                const double y3 = static_cast<double>(m_resampleHistory[3][c]);
-
-                // 4-point, 3rd-order Hermite interpolation (Catmull-Rom spline)
-                const double c0 = y1;
-                const double c1 = 0.5 * (y2 - y0);
-                const double c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-                const double c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-                const double val = ((c3 * t + c2) * t + c1) * t + c0;
-
-                const int32_t iv = static_cast<int32_t>(val >= 0.0 ? (val + 0.5) : (val - 0.5));
-                m_outRingBuffer[slot + c] =
-                    static_cast<int16_t>(std::clamp(iv, -32768, 32767));
-            }
+            m_outRingBuffer[slot + 0] = ch0 ? ch0[s] : 0;
+            m_outRingBuffer[slot + 1] = ch1 ? ch1[s] : 0;
+            m_outRingBuffer[slot + 2] = ch2 ? ch2[s] : 0;
+            m_outRingBuffer[slot + 3] = ch3 ? ch3[s] : 0;
             writeIdx++;
-            m_resamplePhase += step;
         }
-        m_resamplePhase -= 1.0;
+    } else {
+        const double step = m_sampleRate / usbTargetRate;
+
+        for (long s = 0; s < m_bufferSize; ++s) {
+            // Shift 4-sample history window and push current input sample
+            for (int i = 0; i < 3; ++i) {
+                for (int c = 0; c < kNumOutputs; ++c) {
+                    m_resampleHistory[i][c] = m_resampleHistory[i + 1][c];
+                }
+            }
+            m_resampleHistory[3][0] = ch0 ? ch0[s] : 0;
+            m_resampleHistory[3][1] = ch1 ? ch1[s] : 0;
+            m_resampleHistory[3][2] = ch2 ? ch2[s] : 0;
+            m_resampleHistory[3][3] = ch3 ? ch3[s] : 0;
+
+            while (m_resamplePhase < 1.0) {
+                const double t = m_resamplePhase;
+                const size_t slot = static_cast<size_t>(writeIdx & mask) * 4;
+                for (int c = 0; c < kNumOutputs; ++c) {
+                    const double y0 = static_cast<double>(m_resampleHistory[0][c]);
+                    const double y1 = static_cast<double>(m_resampleHistory[1][c]);
+                    const double y2 = static_cast<double>(m_resampleHistory[2][c]);
+                    const double y3 = static_cast<double>(m_resampleHistory[3][c]);
+
+                    // 4-point, 3rd-order Hermite interpolation (Catmull-Rom spline)
+                    const double c0 = y1;
+                    const double c1 = 0.5 * (y2 - y0);
+                    const double c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+                    const double c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+                    const double val = ((c3 * t + c2) * t + c1) * t + c0;
+
+                    const int32_t iv = static_cast<int32_t>(val >= 0.0 ? (val + 0.5) : (val - 0.5));
+                    m_outRingBuffer[slot + c] =
+                        static_cast<int16_t>(std::clamp(iv, -32768, 32767));
+                }
+                writeIdx++;
+                m_resamplePhase += step;
+            }
+            m_resamplePhase -= 1.0;
+        }
     }
 
     m_ringWriteFrames.store(writeIdx, std::memory_order_release);
@@ -832,6 +847,13 @@ void Bcd2000AsioDriver::AsioHostThreadMain() {
         AvSetMmThreadPriority(hMmcss, AVRT_PRIORITY_CRITICAL);
     } else {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    }
+
+    // Wait until UsbStreamingThreadMain determines the active USB transport rate
+    for (int w = 0; w < 50 && !m_usbRateReady.load(std::memory_order_acquire) &&
+                    m_streamingActive.load(std::memory_order_acquire);
+         ++w) {
+        Sleep(10);
     }
 
     // Pre-fill the ring buffer with 3 full ASIO buffers before releasing the USB thread
@@ -876,6 +898,8 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
 
     // If hardware is not connected, run high-precision fallback timer loop
     if (!m_hardwareConnected || !m_hAudioInterface) {
+        m_usbTargetRate.store(m_sampleRate, std::memory_order_release);
+        m_usbRateReady.store(true, std::memory_order_release);
         const double periodSec = static_cast<double>(m_bufferSize) / m_sampleRate;
         auto nextWake = std::chrono::steady_clock::now();
         while (m_streamingActive.load(std::memory_order_acquire)) {
@@ -891,19 +915,21 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
         return;
     }
 
-    // Geometry matching the hardware-verified Milestone 3 diagnostic:
-    // 360 bytes/packet (45 frames/packet), 16 packets/URB (5,760 bytes = 720 frames),
-    // 6 concurrent URBs = 96 ms pipeline depth.
-    constexpr size_t kPacketsPerUrb = 16;
-    constexpr size_t kNumUrbs = 6;
-    const ULONG packetSize = (m_audioOutBytesPerInterval >= 8) ? m_audioOutBytesPerInterval : 360;
-    const ULONG urbBufferSize = static_cast<ULONG>(kPacketsPerUrb * packetSize);
-    const ULONG totalDmaBytes = static_cast<ULONG>(kNumUrbs * urbBufferSize);
-    const size_t framesPerUrb = urbBufferSize / 8; // 720 frames (16 ms)
+    const ULONG packetSize = (m_audioOutBytesPerInterval >= 8) ? m_audioOutBytesPerInterval : 384;
+    const bool isIsoch = (m_audioOutPipeType == UsbdPipeTypeIsochronous);
+
+    // Probe whether WinUSB allows single-packet 352-byte transfers so we can deliver
+    // exact 44,100.0 Hz (9 x 352 B + 1 x 360 B per 10 ms = 44.1 frames/ms) to match
+    // the BCD2000 TUSB3200 / CS4220 fixed 22.5792 MHz crystal clock. If WinUSB requires
+    // full BytesPerInterval-sized transfers, fall back cleanly to 16-packet URBs at
+    // (packetSize / 8) * 1000 Hz so host resampling matches the actual USB drain rate.
+    bool useExact44100 = (isIsoch && packetSize >= 360);
+    size_t numUrbs = useExact44100 ? 40 : 6;
+    ULONG slotStride = useExact44100 ? packetSize : static_cast<ULONG>(16 * packetSize);
+    ULONG totalDmaBytes = static_cast<ULONG>(numUrbs * slotStride);
 
     std::vector<uint8_t> dmaBuffer(totalDmaBytes, 0);
     WINUSB_ISOCH_BUFFER_HANDLE hIsochBuffer = nullptr;
-    const bool isIsoch = (m_audioOutPipeType == UsbdPipeTypeIsochronous);
 
     WinUsb_ResetPipe(m_hAudioInterface, m_audioOutPipe);
     if (isIsoch) {
@@ -914,6 +940,52 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
         }
     }
 
+    if (useExact44100) {
+        bool probeAccepted = false;
+        if (hIsochBuffer) {
+            OVERLAPPED probeOv{};
+            probeOv.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (probeOv.hEvent) {
+                BOOL ok = WinUsb_WriteIsochPipeAsap(hIsochBuffer, 0, 352, FALSE, &probeOv);
+                DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+                if (ok || err == ERROR_IO_PENDING) {
+                    if (WaitForSingleObject(probeOv.hEvent, 50) == WAIT_OBJECT_0) {
+                        DWORD xfer = 0;
+                        if (WinUsb_GetOverlappedResult(m_hAudioInterface, &probeOv, &xfer, FALSE)) {
+                            probeAccepted = true;
+                        }
+                    } else {
+                        WinUsb_AbortPipe(m_hAudioInterface, m_audioOutPipe);
+                    }
+                }
+                CloseHandle(probeOv.hEvent);
+            }
+        }
+
+        if (!probeAccepted) {
+            useExact44100 = false;
+            if (hIsochBuffer) {
+                WinUsb_UnregisterIsochBuffer(hIsochBuffer);
+                hIsochBuffer = nullptr;
+            }
+            WinUsb_ResetPipe(m_hAudioInterface, m_audioOutPipe);
+            numUrbs = 6;
+            slotStride = static_cast<ULONG>(16 * packetSize);
+            totalDmaBytes = static_cast<ULONG>(numUrbs * slotStride);
+            dmaBuffer.assign(totalDmaBytes, 0);
+            if (!WinUsb_RegisterIsochBuffer(m_hAudioInterface, m_audioOutPipe,
+                                            dmaBuffer.data(), totalDmaBytes,
+                                            &hIsochBuffer)) {
+                hIsochBuffer = nullptr;
+            }
+        }
+    }
+
+    const double actualUsbRate =
+        useExact44100 ? 44100.0 : (static_cast<double>(packetSize / 8) * 1000.0);
+    m_usbTargetRate.store(actualUsbRate, std::memory_order_release);
+    m_usbRateReady.store(true, std::memory_order_release);
+
     struct UrbSlot {
         OVERLAPPED ov{};
         ULONG offset = 0;
@@ -921,10 +993,10 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
         bool inFlight = false;
     };
 
-    std::vector<UrbSlot> urbs(kNumUrbs);
-    for (size_t i = 0; i < kNumUrbs; ++i) {
-        urbs[i].offset = static_cast<ULONG>(i * urbBufferSize);
-        urbs[i].length = urbBufferSize;
+    std::vector<UrbSlot> urbs(numUrbs);
+    for (size_t i = 0; i < numUrbs; ++i) {
+        urbs[i].offset = static_cast<ULONG>(i * slotStride);
+        urbs[i].length = useExact44100 ? (((i % 10) == 9) ? 360 : 352) : slotStride;
         urbs[i].ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     }
 
@@ -993,20 +1065,21 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
         ResetEvent(slot.ov.hEvent);
 
         int16_t *dst = reinterpret_cast<int16_t *>(dmaBuffer.data() + slot.offset);
+        const size_t framesInSlot = slot.length / 8;
         const size_t mask = kRingCapacityFrames - 1;
         const uint64_t writeIdx = m_ringWriteFrames.load(std::memory_order_acquire);
         const uint64_t readIdx = m_ringReadFrames.load(std::memory_order_relaxed);
         const size_t available = (writeIdx >= readIdx) ? static_cast<size_t>(writeIdx - readIdx) : 0;
 
-        if (available >= framesPerUrb) {
-            for (size_t f = 0; f < framesPerUrb; ++f) {
+        if (available >= framesInSlot) {
+            for (size_t f = 0; f < framesInSlot; ++f) {
                 const size_t ringSlot = static_cast<size_t>((readIdx + f) & mask) * 4;
                 dst[f * 4 + 0] = m_outRingBuffer[ringSlot + 0];
                 dst[f * 4 + 1] = m_outRingBuffer[ringSlot + 1];
                 dst[f * 4 + 2] = m_outRingBuffer[ringSlot + 2];
                 dst[f * 4 + 3] = m_outRingBuffer[ringSlot + 3];
             }
-            m_ringReadFrames.store(readIdx + framesPerUrb, std::memory_order_release);
+            m_ringReadFrames.store(readIdx + framesInSlot, std::memory_order_release);
         } else {
             // Buffer starvation protection: copy available frames, fill rest with silence
             for (size_t f = 0; f < available; ++f) {
@@ -1016,7 +1089,7 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
                 dst[f * 4 + 2] = m_outRingBuffer[ringSlot + 2];
                 dst[f * 4 + 3] = m_outRingBuffer[ringSlot + 3];
             }
-            std::memset(dst + available * 4, 0, (framesPerUrb - available) * 8);
+            std::memset(dst + available * 4, 0, (framesInSlot - available) * 8);
             m_ringReadFrames.store(readIdx + available, std::memory_order_release);
         }
 
@@ -1033,9 +1106,9 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
         Sleep(10);
     }
 
-    // Prime the USB isochronous pipeline with all 6 URBs
+    // Prime the USB isochronous pipeline with all numUrbs transfers
     bool pipelineActive = true;
-    for (size_t i = 0; i < kNumUrbs; ++i) {
+    for (size_t i = 0; i < numUrbs; ++i) {
         if (!HarvestAndFillUrb(i)) {
             pipelineActive = false;
             break;
@@ -1063,11 +1136,11 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
         if (!HarvestAndFillUrb(nextReap)) {
             break;
         }
-        nextReap = (nextReap + 1) % kNumUrbs;
+        nextReap = (nextReap + 1) % numUrbs;
     }
 
     // Cleanly drain in-flight URBs
-    for (size_t i = 0; i < kNumUrbs; ++i) {
+    for (size_t i = 0; i < numUrbs; ++i) {
         if (urbs[i].inFlight) {
             WaitForSingleObject(urbs[i].ov.hEvent, 150);
             DWORD dummy = 0;

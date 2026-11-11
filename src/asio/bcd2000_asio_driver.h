@@ -121,6 +121,8 @@ private:
 
     // Real-time decoupled streaming state
     std::atomic<bool> m_streamingActive{false};
+    std::atomic<bool> m_usbRateReady{false};
+    std::atomic<double> m_usbTargetRate{kDefaultSampleRate};
     std::atomic<bool> m_prefillReady{false};
     HANDLE m_hAsioTriggerEvent{nullptr};
     std::thread m_usbThread;

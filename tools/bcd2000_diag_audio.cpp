@@ -100,6 +100,7 @@ struct AudioTestConfig {
   double durationSec = 10.0;
   double amplitude = 0.75; // -2.5 dBFS clean headroom
   RoutingMode routingMode = RoutingMode::AllChannels;
+  bool exact44100 = false; // 9x352 B + 1x360 B per 10 ms (441 frames / 10 ms)
 };
 
 struct BcdUsbAudioContext {
@@ -636,15 +637,21 @@ struct AudioUrbSlot {
 
 int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
   const ULONG packetSize = ctx.audioOutBytesPerInterval;
-  const ULONG urbBufferSize = static_cast<ULONG>(kPacketsPerUrb * packetSize);
-  const ULONG totalRingBufferSize = static_cast<ULONG>(kNumUrbs * urbBufferSize);
-  const size_t framesPerUrb = urbBufferSize / kBytesPerFrame;
+  const bool useExact44100 = cfg.exact44100 && (packetSize >= 360);
+  const size_t numUrbs = useExact44100 ? 40 : kNumUrbs;
+  const size_t packetsPerUrb = useExact44100 ? 1 : kPacketsPerUrb;
+  const ULONG slotStride =
+      useExact44100 ? packetSize : static_cast<ULONG>(packetsPerUrb * packetSize);
+  const ULONG totalRingBufferSize = static_cast<ULONG>(numUrbs * slotStride);
+  const size_t framesPerSlot = slotStride / kBytesPerFrame;
 
-  // Effective USB frame rate (45 frames/ms = 45,000 frames/s when sending full
-  // 360-byte packets, or 44,100 Hz nominal). Calculate target frames from
-  // durationSec so wall-clock duration matches `--duration` accurately.
+  // Effective USB frame rate:
+  //  - Standard WinUSB multi-packet mode sends BytesPerInterval/8 frames per 1 ms packet.
+  //  - Exact 44.1 kHz mode sends 9 packets of 44 frames (352 B) + 1 packet of 45 frames (360 B)
+  //    every 10 ms = 441 frames / 10 ms = 44,100.000 Hz exact.
   const double effectiveUsbFramesPerSec =
-      static_cast<double>(packetSize / kBytesPerFrame) * 1000.0;
+      useExact44100 ? kNominalSampleRate
+                    : (static_cast<double>(packetSize / kBytesPerFrame) * 1000.0);
   const uint64_t totalTargetFrames =
       (cfg.durationSec > 0.0)
           ? static_cast<uint64_t>(cfg.durationSec * effectiveUsbFramesPerSec)
@@ -659,12 +666,21 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
   std::cout << "  Formato PCM          : 16-bit Signed Little-Endian (S16_LE)\n";
   std::cout << "  Canales Intercalados : 4 canales (Ch 1-2 Master RCA | Ch 3-4 "
                "Auriculares)\n";
-  std::cout << "  Frecuencia Muestreo  : 44100 Hz (Nominal DAC) | Paquete USB: "
-            << packetSize << " B/ms (" << (packetSize / kBytesPerFrame)
-            << " frames/ms)\n";
-  std::cout << "  Geometria de Cola    : " << kNumUrbs << " URBs x "
-            << kPacketsPerUrb << " paquetes = " << urbBufferSize << " B/URB ("
-            << framesPerUrb << " frames / " << kPacketsPerUrb << " ms)\n";
+  if (useExact44100) {
+    std::cout << "  Frecuencia Muestreo  : 44100 Hz EXACTA (9x352 B + 1x360 B / "
+                 "10 ms | MaxPkt: "
+              << packetSize << " B)\n";
+    std::cout << "  Geometria de Cola    : " << numUrbs
+              << " URBs x 1 paquete (352/360 B/URB | cola " << numUrbs
+              << " ms)\n";
+  } else {
+    std::cout << "  Frecuencia Muestreo  : 44100 Hz (Nominal DAC) | Paquete USB: "
+              << packetSize << " B/ms (" << (packetSize / kBytesPerFrame)
+              << " frames/ms)\n";
+    std::cout << "  Geometria de Cola    : " << numUrbs << " URBs x "
+              << packetsPerUrb << " paquetes = " << slotStride << " B/URB ("
+              << framesPerSlot << " frames / " << packetsPerUrb << " ms)\n";
+  }
   std::cout << "  Tono de Prueba       : Senoidal pura a " << std::fixed
             << std::setprecision(1) << cfg.frequencyHz << " Hz (Volumen: "
             << static_cast<int>(cfg.amplitude * 100.0) << "%)\n";
@@ -723,16 +739,16 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
       return 2;
     }
     std::cout << "[ISOCH] Buffer DMA isocrono registrado en WinUSB ("
-              << totalRingBufferSize << " bytes, " << kNumUrbs << " URBs).\n\n";
+              << totalRingBufferSize << " bytes, " << numUrbs << " URBs).\n\n";
   }
 
   // 4. Initialize URB slots and Manual-Reset Overlapped Events
-  std::vector<AudioUrbSlot> urbs(kNumUrbs);
-  std::vector<HANDLE> waitEvents(kNumUrbs, nullptr);
+  std::vector<AudioUrbSlot> urbs(numUrbs);
+  std::vector<HANDLE> waitEvents(numUrbs, nullptr);
 
-  for (size_t i = 0; i < kNumUrbs; ++i) {
-    urbs[i].offset = static_cast<ULONG>(i * urbBufferSize);
-    urbs[i].length = urbBufferSize;
+  for (size_t i = 0; i < numUrbs; ++i) {
+    urbs[i].offset = static_cast<ULONG>(i * slotStride);
+    urbs[i].length = useExact44100 ? (((i % 10) == 9) ? 360 : 352) : slotStride;
     urbs[i].overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     waitEvents[i] = urbs[i].overlapped.hEvent;
   }
@@ -743,6 +759,7 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
   ULONG nextScheduledFrame = 0;
 
   uint64_t totalUrbsCompleted = 0;
+  uint64_t totalPacketsCompleted = 0;
   uint64_t totalBytesTransferred = 0;
   uint64_t totalUnderruns = 0;
 
@@ -814,11 +831,11 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
     return false;
   };
 
-  // 5. Prime the USB Isochronous pipeline with all kNumUrbs transfers
+  // 5. Prime the USB Isochronous pipeline with all numUrbs transfers
   auto startTime = std::chrono::steady_clock::now();
   auto lastUiUpdate = startTime;
 
-  for (size_t i = 0; i < kNumUrbs; ++i) {
+  for (size_t i = 0; i < numUrbs; ++i) {
     if (!SubmitAudioUrb(i)) {
       g_Running.store(false);
       break;
@@ -863,6 +880,7 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
       streamContinueFlag = false;
     } else {
       totalUrbsCompleted++;
+      totalPacketsCompleted += packetsPerUrb;
       totalBytesTransferred += slot.length;
     }
 
@@ -880,7 +898,7 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
       break;
     }
 
-    nextUrbToReap = (nextUrbToReap + 1) % kNumUrbs;
+    nextUrbToReap = (nextUrbToReap + 1) % numUrbs;
 
     // Handle non-blocking interactive keyboard controls
     if (_kbhit()) {
@@ -935,7 +953,7 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
 
   // 7. Submit one silent zero-filled buffer and drain in-flight URBs cleanly
   //    so the DAC settles at 0 V without a pop/click on exit.
-  for (size_t i = 0; i < kNumUrbs; ++i) {
+  for (size_t i = 0; i < numUrbs; ++i) {
     if (urbs[i].inFlight) {
       WaitForSingleObject(urbs[i].overlapped.hEvent, 200);
       DWORD dummy = 0;
@@ -947,9 +965,10 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
 
   // Send a brief zero-filled URB to park the DAC at 0
   if (isIsoch && hIsochBuffer) {
-    std::memset(ringBuffer.data(), 0, urbBufferSize);
+    const ULONG silenceLen = useExact44100 ? 352 : slotStride;
+    std::memset(ringBuffer.data(), 0, silenceLen);
     ResetEvent(urbs[0].overlapped.hEvent);
-    if (WinUsb_WriteIsochPipeAsap(hIsochBuffer, 0, urbBufferSize, FALSE,
+    if (WinUsb_WriteIsochPipeAsap(hIsochBuffer, 0, silenceLen, FALSE,
                                   &urbs[0].overlapped) ||
         GetLastError() == ERROR_IO_PENDING) {
       WaitForSingleObject(urbs[0].overlapped.hEvent, 100);
@@ -958,7 +977,7 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
 
   WinUsb_AbortPipe(ctx.hAudioInterface, ctx.audioOutPipe);
 
-  for (size_t i = 0; i < kNumUrbs; ++i) {
+  for (size_t i = 0; i < numUrbs; ++i) {
     if (urbs[i].overlapped.hEvent) {
       CloseHandle(urbs[i].overlapped.hEvent);
       urbs[i].overlapped.hEvent = nullptr;
@@ -988,7 +1007,7 @@ int RunAudioStreamingTest(BcdUsbAudioContext &ctx, AudioTestConfig &cfg) {
   std::cout << "  Tiempo de streaming activo : " << std::fixed
             << std::setprecision(2) << totalElapsedSec << " segundos\n";
   std::cout << "  Paquetes URB completados   : " << totalUrbsCompleted
-            << " URBs (" << (totalUrbsCompleted * kPacketsPerUrb)
+            << " URBs (" << totalPacketsCompleted
             << " tramas isocronas de 1 ms)\n";
   std::cout << "  Muestras multicanal (4ch)  : " << totalFramesTransferred
             << " frames (" << (totalBytesTransferred / 1024) << " KB)\n";
@@ -1015,6 +1034,7 @@ void PrintUsage(const char *progName) {
          "0.75)\n"
       << "  --channels,  -c <modo>   Canales de salida: all | master | phones "
          "| dual (defecto: all)\n"
+      << "  --exact,     -e          Cadencia exacta 44100 Hz (9x352 B + 1x360 B)\n"
       << "  --help,      -h          Muestra esta pantalla de ayuda\n\n"
       << "Ejemplo de verificacion del Hito 3:\n"
       << "  " << progName << " --frequency 440 --duration 10\n";
@@ -1028,6 +1048,8 @@ int main(int argc, char *argv[]) {
     if (arg == "--help" || arg == "-h") {
       PrintUsage(argv[0]);
       return 0;
+    } else if (arg == "--exact" || arg == "-e") {
+      cfg.exact44100 = true;
     } else if ((arg == "--frequency" || arg == "-f") && i + 1 < argc) {
       cfg.frequencyHz = std::clamp(std::atof(argv[++i]), 20.0, 20000.0);
     } else if ((arg == "--duration" || arg == "-d") && i + 1 < argc) {
