@@ -1,0 +1,7 @@
+LIBRARY "bcd2000_midi"
+EXPORTS
+    DriverProc
+    modMessage
+    midMessage
+    DllRegisterServer   PRIVATE
+    DllUnregisterServer PRIVATE

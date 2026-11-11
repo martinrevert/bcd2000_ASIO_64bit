@@ -17,11 +17,13 @@
 #include <winusb.h>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "../common/bcd2000_usb_protocol.h"
 #include "../../third_party/asio-sdk/common/iasiodrv.h"
 
 extern std::atomic<long> g_ActiveComObjects;
@@ -80,6 +82,12 @@ private:
     void CloseUsbHardware();
     bool SendLedCommand(uint8_t cc, uint8_t value);
     void SetStatusLeds(bool turnOn);
+    bool SendRawMidiToUsb(const uint8_t *data, size_t len);
+    void StartMidiBridge();
+    void StopMidiBridge();
+    void MidiUsbInThreadMain();
+    void MidiPipeServerThreadMain();
+    bool HasConnectedMidiClients();
 
     void StreamingThreadMain();
     void UsbStreamingThreadMain();
@@ -149,6 +157,16 @@ private:
     UCHAR m_audioAltSetting{0};
     USBD_PIPE_TYPE m_audioOutPipeType{UsbdPipeTypeIsochronous};
     ULONG m_audioOutBytesPerInterval{360};
+
+    // Embedded WinUSB -> WinMM MIDI bridge (Named Pipe server + Overlapped EP 0x81/0x01)
+    struct MidiPipeClient;
+    std::mutex m_midiWriteMutex;
+    std::atomic<bool> m_midiBridgeRunning{false};
+    HANDLE m_hMidiStopEvent{nullptr};
+    std::thread m_midiInThread;
+    std::thread m_midiPipeThread;
+    std::mutex m_midiClientsMutex;
+    std::vector<std::shared_ptr<MidiPipeClient>> m_midiClients;
 };
 
 #endif // BCD2000_ASIO_DRIVER_H

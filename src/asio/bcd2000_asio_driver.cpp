@@ -45,6 +45,20 @@ bool ContainsInsensitiveW(const std::wstring &text, const std::wstring &target) 
 
 } // namespace
 
+struct Bcd2000AsioDriver::MidiPipeClient {
+    HANDLE hPipe{INVALID_HANDLE_VALUE};
+    std::mutex writeMutex;
+    std::atomic<bool> alive{true};
+    ~MidiPipeClient() {
+        if (hPipe != INVALID_HANDLE_VALUE) {
+            CancelIoEx(hPipe, nullptr);
+            DisconnectNamedPipe(hPipe);
+            CloseHandle(hPipe);
+            hPipe = INVALID_HANDLE_VALUE;
+        }
+    }
+};
+
 // ============================================================================
 // Constructor & Destructor
 // ============================================================================
@@ -100,46 +114,7 @@ STDMETHODIMP_(ULONG) Bcd2000AsioDriver::Release() {
 bool Bcd2000AsioDriver::OpenUsbHardware() {
     CloseUsbHardware();
 
-    HDEVINFO hIntfInfo = SetupDiGetClassDevsW(
-        &GUID_DEVINTERFACE_WINUSB_BCD2000, nullptr, nullptr,
-        DIGCF_DEVICEINTERFACE | DIGCF_PRESENT);
-
-    std::wstring targetPath;
-    const std::wstring vidStr = L"vid_1397";
-    const std::wstring pidStr = L"pid_00bd";
-
-    if (hIntfInfo != INVALID_HANDLE_VALUE) {
-        SP_DEVICE_INTERFACE_DATA ifData{};
-        ifData.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
-
-        for (DWORD idx = 0; SetupDiEnumDeviceInterfaces(
-                 hIntfInfo, nullptr, &GUID_DEVINTERFACE_WINUSB_BCD2000, idx,
-                 &ifData);
-             ++idx) {
-            DWORD reqSize = 0;
-            SetupDiGetDeviceInterfaceDetailW(hIntfInfo, &ifData, nullptr, 0,
-                                             &reqSize, nullptr);
-            if (reqSize == 0)
-                continue;
-
-            std::vector<BYTE> buf(reqSize);
-            auto detailData =
-                reinterpret_cast<PSP_DEVICE_INTERFACE_DETAIL_DATA_W>(buf.data());
-            detailData->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
-
-            if (SetupDiGetDeviceInterfaceDetailW(hIntfInfo, &ifData, detailData,
-                                                 reqSize, nullptr, nullptr)) {
-                std::wstring path(detailData->DevicePath);
-                if (ContainsInsensitiveW(path, vidStr) &&
-                    ContainsInsensitiveW(path, pidStr)) {
-                    targetPath = path;
-                    break;
-                }
-            }
-        }
-        SetupDiDestroyDeviceInfoList(hIntfInfo);
-    }
-
+    const std::wstring targetPath = bcd2000::FindBcd2000DevicePath();
     if (targetPath.empty()) {
         std::snprintf(m_errorMessage, sizeof(m_errorMessage),
                       "BCD2000 (1397:00BD) WinUSB device not found.");
@@ -151,6 +126,36 @@ bool Bcd2000AsioDriver::OpenUsbHardware() {
                             OPEN_EXISTING,
                             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
                             nullptr);
+
+    if (m_hDevice == INVALID_HANDLE_VALUE) {
+        const DWORD openErr = GetLastError();
+        if (openErr == ERROR_ACCESS_DENIED || openErr == ERROR_SHARING_VIOLATION) {
+            // Standalone bcd2000_midi.dll may hold WinUSB; request graceful handoff
+            if (WaitNamedPipeW(bcd2000::kMidiCtrlPipeName, 100)) {
+                HANDLE hCtrl = CreateFileW(bcd2000::kMidiCtrlPipeName,
+                                           GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                                           OPEN_EXISTING, 0, nullptr);
+                if (hCtrl != INVALID_HANDLE_VALUE) {
+                    const char cmd = 'R';
+                    DWORD written = 0;
+                    WriteFile(hCtrl, &cmd, 1, &written, nullptr);
+                    char ack[4]{};
+                    DWORD read = 0;
+                    ReadFile(hCtrl, ack, sizeof(ack), &read, nullptr);
+                    CloseHandle(hCtrl);
+                }
+                for (int attempt = 0; attempt < 8 && m_hDevice == INVALID_HANDLE_VALUE; ++attempt) {
+                    Sleep(25);
+                    m_hDevice = CreateFileW(targetPath.c_str(),
+                                            GENERIC_WRITE | GENERIC_READ,
+                                            FILE_SHARE_WRITE | FILE_SHARE_READ,
+                                            nullptr, OPEN_EXISTING,
+                                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+                                            nullptr);
+                }
+            }
+        }
+    }
 
     if (m_hDevice == INVALID_HANDLE_VALUE) {
         std::snprintf(m_errorMessage, sizeof(m_errorMessage),
@@ -269,11 +274,14 @@ bool Bcd2000AsioDriver::OpenUsbHardware() {
     }
 
     m_hardwareConnected = true;
+    StartMidiBridge();
     return true;
 }
 
 void Bcd2000AsioDriver::CloseUsbHardware() {
-    if (m_hardwareConnected) {
+    StopMidiBridge();
+
+    if (m_hardwareConnected && !HasConnectedMidiClients()) {
         SetStatusLeds(false);
     }
     for (size_t i = m_allInterfaces.size(); i > 0; --i) {
@@ -293,21 +301,17 @@ void Bcd2000AsioDriver::CloseUsbHardware() {
     m_hardwareConnected = false;
 }
 
-bool Bcd2000AsioDriver::SendLedCommand(uint8_t cc, uint8_t value) {
-    if (!m_hMidiInterface || m_midiOutPipe == 0)
+bool Bcd2000AsioDriver::SendRawMidiToUsb(const uint8_t *data, size_t len) {
+    if (!m_hMidiInterface || m_midiOutPipe == 0 || !data || len == 0) {
         return false;
+    }
+    std::lock_guard<std::mutex> lock(m_midiWriteMutex);
+    return bcd2000::SendBcdMidiOverlapped(m_hMidiInterface, m_midiOutPipe, data, len);
+}
 
-    uint8_t frame[64] = {0};
-    frame[0] = 0x03;
-    frame[1] = 0x00;
-    frame[2] = 0x03;
-    frame[3] = 0xB0;
-    frame[4] = cc;
-    frame[5] = value;
-
-    ULONG sent = 0;
-    return WinUsb_WritePipe(m_hMidiInterface, m_midiOutPipe, frame,
-                            sizeof(frame), &sent, nullptr) != FALSE;
+bool Bcd2000AsioDriver::SendLedCommand(uint8_t cc, uint8_t value) {
+    const uint8_t midi[3] = {0xB0, cc, value};
+    return SendRawMidiToUsb(midi, sizeof(midi));
 }
 
 void Bcd2000AsioDriver::SetStatusLeds(bool turnOn) {
@@ -319,18 +323,239 @@ void Bcd2000AsioDriver::SetStatusLeds(bool turnOn) {
 
     // Pack all 4 LED updates into a single 64-byte frame with zero Sleep()
     // so ASIO start()/stop() never block the host audio thread.
-    uint8_t frame[64] = {0};
-    frame[0] = 0x03;
-    frame[1] = 0x00;
-    frame[2] = 12; // 4 * 3 MIDI bytes
+    uint8_t midi[12]{};
     for (size_t i = 0; i < 4; ++i) {
-        frame[3 + i * 3 + 0] = 0xB0;
-        frame[3 + i * 3 + 1] = leds[i];
-        frame[3 + i * 3 + 2] = val;
+        midi[i * 3 + 0] = 0xB0;
+        midi[i * 3 + 1] = leds[i];
+        midi[i * 3 + 2] = val;
     }
-    ULONG sent = 0;
-    WinUsb_WritePipe(m_hMidiInterface, m_midiOutPipe, frame, sizeof(frame),
-                     &sent, nullptr);
+    SendRawMidiToUsb(midi, sizeof(midi));
+}
+
+bool Bcd2000AsioDriver::HasConnectedMidiClients() {
+    std::lock_guard<std::mutex> lock(m_midiClientsMutex);
+    return !m_midiClients.empty();
+}
+
+void Bcd2000AsioDriver::StartMidiBridge() {
+    if (m_midiBridgeRunning.load(std::memory_order_acquire) ||
+        !m_hMidiInterface || m_midiInPipe == 0) {
+        return;
+    }
+    m_hMidiStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    m_midiBridgeRunning.store(true, std::memory_order_release);
+    m_midiInThread = std::thread(&Bcd2000AsioDriver::MidiUsbInThreadMain, this);
+    m_midiPipeThread = std::thread(&Bcd2000AsioDriver::MidiPipeServerThreadMain, this);
+}
+
+void Bcd2000AsioDriver::StopMidiBridge() {
+    if (!m_midiBridgeRunning.load(std::memory_order_acquire)) {
+        return;
+    }
+    m_midiBridgeRunning.store(false, std::memory_order_release);
+    if (m_hMidiStopEvent) {
+        SetEvent(m_hMidiStopEvent);
+    }
+    if (m_hMidiInterface && m_midiInPipe != 0) {
+        WinUsb_AbortPipe(m_hMidiInterface, m_midiInPipe);
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_midiClientsMutex);
+        for (auto &c : m_midiClients) {
+            c->alive.store(false, std::memory_order_release);
+            if (c->hPipe != INVALID_HANDLE_VALUE) {
+                CancelIoEx(c->hPipe, nullptr);
+                DisconnectNamedPipe(c->hPipe);
+            }
+        }
+    }
+    if (m_midiInThread.joinable()) {
+        m_midiInThread.join();
+    }
+    if (m_midiPipeThread.joinable()) {
+        m_midiPipeThread.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_midiClientsMutex);
+        m_midiClients.clear();
+    }
+    if (m_hMidiStopEvent) {
+        CloseHandle(m_hMidiStopEvent);
+        m_hMidiStopEvent = nullptr;
+    }
+}
+
+void Bcd2000AsioDriver::MidiUsbInThreadMain() {
+    UCHAR rawIo = 1;
+    WinUsb_SetPipePolicy(m_hMidiInterface, m_midiInPipe, RAW_IO, sizeof(rawIo), &rawIo);
+
+    HANDLE hReadEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!hReadEvent) {
+        return;
+    }
+
+    bcd2000::MidiRunningStatusParser parser;
+    uint8_t buf[64]{};
+
+    while (m_midiBridgeRunning.load(std::memory_order_acquire)) {
+        OVERLAPPED ov{};
+        ov.hEvent = hReadEvent;
+        ResetEvent(hReadEvent);
+
+        ULONG bytesRead = 0;
+        BOOL ok = WinUsb_ReadPipe(m_hMidiInterface, m_midiInPipe, buf, sizeof(buf),
+                                  &bytesRead, &ov);
+        DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+        if (!ok && err == ERROR_IO_PENDING) {
+            HANDLE waits[2] = {m_hMidiStopEvent, hReadEvent};
+            DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+            if (w == WAIT_OBJECT_0 || !m_midiBridgeRunning.load(std::memory_order_acquire)) {
+                WinUsb_AbortPipe(m_hMidiInterface, m_midiInPipe);
+                WaitForSingleObject(hReadEvent, 100);
+                break;
+            }
+            ok = WinUsb_GetOverlappedResult(m_hMidiInterface, &ov, &bytesRead, FALSE);
+        }
+
+        if (ok && bytesRead > 0) {
+            parser.FeedUsbPacket(buf, bytesRead, [&](DWORD packedMsg) {
+                std::vector<std::shared_ptr<MidiPipeClient>> snapshot;
+                {
+                    std::lock_guard<std::mutex> lock(m_midiClientsMutex);
+                    snapshot = m_midiClients;
+                }
+                for (auto &client : snapshot) {
+                    if (!client->alive.load(std::memory_order_relaxed) ||
+                        client->hPipe == INVALID_HANDLE_VALUE) {
+                        continue;
+                    }
+                    std::lock_guard<std::mutex> wLock(client->writeMutex);
+                    OVERLAPPED wOv{};
+                    wOv.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                    if (wOv.hEvent) {
+                        DWORD written = 0;
+                        BOOL wOk = WriteFile(client->hPipe, &packedMsg, sizeof(packedMsg),
+                                             &written, &wOv);
+                        if (!wOk && GetLastError() == ERROR_IO_PENDING) {
+                            if (WaitForSingleObject(wOv.hEvent, 20) == WAIT_OBJECT_0) {
+                                GetOverlappedResult(client->hPipe, &wOv, &written, FALSE);
+                            } else {
+                                CancelIoEx(client->hPipe, &wOv);
+                            }
+                        }
+                        CloseHandle(wOv.hEvent);
+                    }
+                }
+            });
+        } else if (!ok) {
+            if (!m_midiBridgeRunning.load(std::memory_order_acquire)) {
+                break;
+            }
+            Sleep(10);
+        }
+    }
+
+    CloseHandle(hReadEvent);
+}
+
+void Bcd2000AsioDriver::MidiPipeServerThreadMain() {
+    HANDLE hConnEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!hConnEvent) {
+        return;
+    }
+
+    std::vector<std::thread> clientReaders;
+
+    while (m_midiBridgeRunning.load(std::memory_order_acquire)) {
+        HANDLE hPipe = CreateNamedPipeW(
+            bcd2000::kAsioMidiPipeName,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, nullptr);
+        if (hPipe == INVALID_HANDLE_VALUE) {
+            Sleep(50);
+            continue;
+        }
+
+        OVERLAPPED connOv{};
+        connOv.hEvent = hConnEvent;
+        ResetEvent(hConnEvent);
+        BOOL connected = ConnectNamedPipe(hPipe, &connOv);
+        DWORD connErr = connected ? ERROR_SUCCESS : GetLastError();
+        if (!connected && connErr == ERROR_IO_PENDING) {
+            HANDLE waits[2] = {m_hMidiStopEvent, hConnEvent};
+            DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+            if (w == WAIT_OBJECT_0 || !m_midiBridgeRunning.load(std::memory_order_acquire)) {
+                CancelIoEx(hPipe, &connOv);
+                CloseHandle(hPipe);
+                break;
+            }
+            DWORD dummy = 0;
+            connected = GetOverlappedResult(hPipe, &connOv, &dummy, FALSE);
+        } else if (!connected && connErr == ERROR_PIPE_CONNECTED) {
+            connected = TRUE;
+        }
+
+        if (!connected) {
+            CloseHandle(hPipe);
+            continue;
+        }
+
+        auto client = std::make_shared<MidiPipeClient>();
+        client->hPipe = hPipe;
+        {
+            std::lock_guard<std::mutex> lock(m_midiClientsMutex);
+            m_midiClients.push_back(client);
+        }
+
+        clientReaders.emplace_back([this, client]() {
+            HANDLE hEv = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (hEv) {
+                uint8_t msg[64]{};
+                while (m_midiBridgeRunning.load(std::memory_order_acquire) &&
+                       client->alive.load(std::memory_order_acquire)) {
+                    OVERLAPPED rOv{};
+                    rOv.hEvent = hEv;
+                    ResetEvent(hEv);
+                    DWORD read = 0;
+                    BOOL rOk = ReadFile(client->hPipe, msg, sizeof(msg), &read, &rOv);
+                    DWORD rErr = rOk ? ERROR_SUCCESS : GetLastError();
+                    if (!rOk && rErr == ERROR_IO_PENDING) {
+                        HANDLE waits[2] = {m_hMidiStopEvent, hEv};
+                        DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                        if (w == WAIT_OBJECT_0 ||
+                            !m_midiBridgeRunning.load(std::memory_order_acquire)) {
+                            CancelIoEx(client->hPipe, &rOv);
+                            break;
+                        }
+                        rOk = GetOverlappedResult(client->hPipe, &rOv, &read, FALSE);
+                    }
+                    if (!rOk || read < 2) {
+                        break;
+                    }
+                    const size_t payloadLen = std::min<size_t>(msg[0], read - 1);
+                    if (payloadLen > 0) {
+                        SendRawMidiToUsb(&msg[1], payloadLen);
+                    }
+                }
+                CloseHandle(hEv);
+            }
+            client->alive.store(false, std::memory_order_release);
+            {
+                std::lock_guard<std::mutex> lock(m_midiClientsMutex);
+                m_midiClients.erase(
+                    std::remove(m_midiClients.begin(), m_midiClients.end(), client),
+                    m_midiClients.end());
+            }
+        });
+    }
+
+    for (auto &t : clientReaders) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+    CloseHandle(hConnEvent);
 }
 
 // ============================================================================
@@ -615,7 +840,7 @@ ASIOError Bcd2000AsioDriver::start() {
     if (!m_hardwareConnected) {
         OpenUsbHardware();
     }
-    if (m_hardwareConnected) {
+    if (m_hardwareConnected && !HasConnectedMidiClients()) {
         SetStatusLeds(true);
     }
 
@@ -669,7 +894,7 @@ ASIOError Bcd2000AsioDriver::stop() {
         m_hAsioTriggerEvent = nullptr;
     }
 
-    if (m_hardwareConnected) {
+    if (m_hardwareConnected && !HasConnectedMidiClients()) {
         SetStatusLeds(false);
     }
 

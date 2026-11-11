@@ -98,6 +98,31 @@ target_link_libraries(hostsample
         user32
 )
 
+# Milestone 4.5: 64-bit User-Mode WinMM MIDI Driver DLL (bcd2000_midi.dll)
+add_library(bcd2000_midi SHARED
+    src/midi/bcd2000_midi_driver.cpp
+    src/midi/bcd2000_midi.def
+)
+
+target_link_libraries(bcd2000_midi
+    PRIVATE
+        winmm
+        winusb
+        setupapi
+        advapi32
+        ole32
+)
+
+# Milestone 4.5: WinMM MIDI Host Verification Utility (hostsample_midi.exe)
+add_executable(hostsample_midi
+    tools/hostsample_midi.cpp
+)
+
+target_link_libraries(hostsample_midi
+    PRIVATE
+        winmm
+)
+
 # Copy hostsample.exe to third_party/asio-sdk/host/pc/hostsample.exe to match ROADMAP_VERIFICATION.md
 add_custom_command(TARGET hostsample POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -107,7 +132,7 @@ add_custom_command(TARGET hostsample POST_BUILD
 )
 
 # Set standard output directories matching verification roadmap
-set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio bcd2000_asio hostsample PROPERTIES
+set_target_properties(bcd2000_diag_usb bcd2000_diag_midi bcd2000_diag_audio bcd2000_asio hostsample bcd2000_midi hostsample_midi PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/Debug"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
