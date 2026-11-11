@@ -62,6 +62,12 @@ Here is the plain truth:
 
 ## Quick Start Guide
 
+### Downloads & Release Artifacts
+Download the latest verified release from **[GitHub Releases](https://github.com/martinrevert/bcd2000_ASIO_64bit/releases)**:
+* **`Behringer_BCD2000_Setup_x64.exe`**: Recommended single-EXE automated installer (with WinUSB driver, ASIO & MIDI DLLs, and Mixxx safe preset).
+* **`bcd2000_v2.x.x_binaries_x64.zip`**: Standalone portable archive for manual installations.
+* **`SHA256SUMS.txt`**: Cryptographic SHA-256 checksums to verify download integrity.
+
 ### Requirements
 * A PC running **Windows 10 or Windows 11 (64-bit / x64)**.
 * A **Behringer BCD2000** connected preferably to a direct USB port (avoid unpowered USB hubs).

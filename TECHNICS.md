@@ -143,7 +143,8 @@ This project evolved from the incremental verification roadmap originally outlin
 
 ```powershell
 # 1. Configure for 64-bit (x64 is strictly enforced by CMakeLists.txt)
-cmake -B build -A x64
+# Base suite version defaults to 2.0.0; can be overridden via -DBCD2000_VERSION="X.Y.Z"
+cmake -B build -A x64 -DBCD2000_VERSION="2.0.0"
 
 # 2. Build all driver DLLs and diagnostic utilities (RelWithDebInfo or Release)
 cmake --build build --config Release
@@ -191,6 +192,7 @@ We warmly welcome pull requests, bug reports, hardware testing on different Wind
 3. **Real-Time Audio Thread Safety:** Inside `AsioHostThreadMain` and `UsbStreamingThreadMain`, **never** allocate memory on the heap, take blocking locks that contend with UI/IPC threads, or perform synchronous file I/O.
 4. **Shared Protocol Single Source of Truth:** Keep USB VID/PID, `kInitSequence`, pipe names, `MidiRunningStatusParser`, and frame helpers centralized in [`src/common/bcd2000_usb_protocol.h`](src/common/bcd2000_usb_protocol.h).
 5. **Preserve Dual-Mode WinUSB Sharing:** Any code touching WinUSB handles in ASIO or MIDI must preserve the `'R' -> 'K'` handoff protocol and Mode A/B promotion without breaking open WinMM handles.
+6. **Continuous Delivery & SemVer (v2.0.0+):** Every update to `main` triggers automated builds, NSIS packaging, and tagging via GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)). The baseline starts at `v2.0.0` to avoid version collision with Behringer's legacy 32-bit drivers (`v1.x`). Commit messages drive SemVer: default pushes bump `patch`, `feat:` / `#minor` bumps `minor`, and `BREAKING CHANGE:` / `#major` bumps `major`.
 
 ### Code Style & PR Checklist
 * **C++17 Cleanliness:** Compile with `/W4 /permissive- /utf-8` (`CMakeLists.txt`) with zero new compiler warnings.

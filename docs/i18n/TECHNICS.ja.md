@@ -136,7 +136,8 @@ flowchart TB
 
 ```powershell
 # 1. 64-bit 向けに構成（CMakeLists.txt により x64 以外はエラー停止）
-cmake -B build -A x64
+# デフォルトバージョンは 2.0.0 です（-DBCD2000_VERSION="X.Y.Z" で上書き可能）
+cmake -B build -A x64 -DBCD2000_VERSION="2.0.0"
 
 # 2. 全ドライバー DLL および診断ツールをビルド（Release または RelWithDebInfo）
 cmake --build build --config Release
@@ -184,6 +185,7 @@ cmake --build build --config Release --target bcd2000_installer
 3. **リアルタイム安全性の遵守：** `AsioHostThreadMain` および `UsbStreamingThreadMain` 内でのヒープ確保、UI/IPC 競合ロック、同期ファイル I/O は禁止です。
 4. **プロトコル定義の一元化：** VID/PID、`kInitSequence`、パイプ名、`MidiRunningStatusParser`、フレームヘルパーは [`src/common/bcd2000_usb_protocol.h`](../../src/common/bcd2000_usb_protocol.h) に集約してください。
 5. **デュアルモード・ハンドオフの保護：** WinUSB 制御の変更時も、ホストの開かれた WinMM ハンドルを破棄せず `'R' -> 'K'` 切替を維持してください。
+6. **継続的デリバリーと SemVer（v2.0.0+）：** `main` ブランチへのプッシュごとに GitHub Actions ([`.github/workflows/release.yml`](../../.github/workflows/release.yml)) がトリガーされ、自動ビルド、NSIS パッケージング、タグ付けが実行されます。Behringer の旧 32-bit 公式ドライバー（`v1.x`）との重複を避けるため、ベースバージョンは `v2.0.0` から開始します。コミットメッセージがバージョンを制御します（通常は `patch`、`feat:` / `#minor` で `minor`、`BREAKING CHANGE:` / `#major` で `major`）。
 
 ### コード規約 & PR チェックリスト
 * **C++17 厳格準拠：** `/W4 /permissive- /utf-8` 下で新規警告ゼロでビルドできること。

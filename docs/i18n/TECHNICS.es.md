@@ -143,7 +143,8 @@ El proyecto evolucionó a partir de la matriz incremental definida originalmente
 
 ```powershell
 # 1. Configurar para 64 bits (CMakeLists.txt exige arquitectura x64)
-cmake -B build -A x64
+# La versión base predeterminada es 2.0.0; puede sobrescribirse con -DBCD2000_VERSION="X.Y.Z"
+cmake -B build -A x64 -DBCD2000_VERSION="2.0.0"
 
 # 2. Compilar DLLs del driver y herramientas de diagnóstico (Release o RelWithDebInfo)
 cmake --build build --config Release
@@ -191,6 +192,7 @@ Los binarios compilados se generan en `build\Release\` (o `build\RelWithDebInfo\
 3. **Seguridad en Tiempo Real:** Dentro de `AsioHostThreadMain` y `UsbStreamingThreadMain`, **nunca** hagas asignaciones dinámicas en heap, locks bloqueantes compartidos con hilos de UI/IPC ni I/O síncrona de archivos.
 4. **Fuente Única del Protocolo:** Mantén VID/PID, `kInitSequence`, nombres de pipes, `MidiRunningStatusParser` y utilidades de trama centralizados en [`src/common/bcd2000_usb_protocol.h`](../../src/common/bcd2000_usb_protocol.h).
 5. **Preservar el Handoff Dual-Mode:** Cualquier cambio en manejo de WinUSB debe respetar el protocolo `'R' -> 'K'` y la promoción Modo B ↔ Modo A sin cerrar handles WinMM activos.
+6. **Integración Continua y SemVer (v2.0.0+):** Cada actualización en `main` dispara la compilación, empaquetado NSIS y etiquetado automático en GitHub Actions ([`.github/workflows/release.yml`](../../.github/workflows/release.yml)). La versión base arranca en `v2.0.0` para evitar colisiones con los drivers originales de 32 bits de Behringer (`v1.x`). Los mensajes de commit definen el incremento: commits normales incrementan `patch`, `feat:` / `#minor` incrementan `minor`, y `BREAKING CHANGE:` / `#major` incrementan `major`.
 
 ### Estilo de Código y Checklist de PR
 * **C++17 estricto:** Debe compilar sin nuevos warnings bajo `/W4 /permissive- /utf-8`.

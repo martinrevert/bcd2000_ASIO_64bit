@@ -59,6 +59,12 @@ La respuesta clara es que eso es técnicamente imposible en Windows moderno de 6
 
 ## Guía Rápida de Instalación y Uso
 
+### Descargas y Artefactos de Release
+Descarga la última versión verificada desde la sección oficial de **[GitHub Releases](https://github.com/martinrevert/bcd2000_ASIO_64bit/releases)**:
+* **`Behringer_BCD2000_Setup_x64.exe`**: Instalador único automatizado recomendado (incluye driver WinUSB, DLLs ASIO/MIDI y preset para Mixxx).
+* **`bcd2000_v2.x.x_binaries_x64.zip`**: Paquete portable independiente para instalaciones manuales o avanzadas.
+* **`SHA256SUMS.txt`**: Sumas criptográficas SHA-256 para verificar la integridad de las descargas.
+
 ### Requisitos
 * PC con **Windows 10 o Windows 11 (64 bits / x64)**.
 * **Behringer BCD2000** conectada preferiblemente a un puerto USB directo (evita hubs USB sin alimentación).

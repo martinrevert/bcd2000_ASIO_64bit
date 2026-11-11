@@ -136,7 +136,8 @@ flowchart TB
 
 ```powershell
 # 1. 配置为 64 位（CMakeLists.txt 严格校验 x64 架构）
-cmake -B build -A x64
+# 默认套件版本为 2.0.0；可通过 -DBCD2000_VERSION="X.Y.Z" 覆盖
+cmake -B build -A x64 -DBCD2000_VERSION="2.0.0"
 
 # 2. 编译所有驱动 DLL 与诊断工具（Release 或 RelWithDebInfo）
 cmake --build build --config Release
@@ -184,6 +185,7 @@ cmake --build build --config Release --target bcd2000_installer
 3. **实时音频线程安全：** 在 `AsioHostThreadMain` 与 `UsbStreamingThreadMain` 中严禁堆内存分配、与 UI/IPC 线程争用的阻塞互斥锁，以及同步文件 I/O。
 4. **单一协议真源：** 所有 VID/PID、`kInitSequence`、管道名称、`MidiRunningStatusParser` 与数据帧辅助函数必须集中维护于 [`src/common/bcd2000_usb_protocol.h`](../../src/common/bcd2000_usb_protocol.h)。
 5. **保护双模式热交接：** 任何 WinUSB 句柄改动都必须严格保持 `'R' -> 'K'` 协议与 Mode A/B 状态切换，且不得破坏宿主已打开的 WinMM 句柄。
+6. **持续交付与语义化版本（v2.0.0+）：** `main` 分支的每次更新均会触发 GitHub Actions ([`.github/workflows/release.yml`](../../.github/workflows/release.yml)) 进行自动化构建、NSIS 打包及标签发布。基础版本从 `v2.0.0` 起跳，以避免与百灵达原厂 32 位老驱动（`v1.x`）发生版本冲突。Commit 提交信息决定版本递增：普通提交递增 `patch`，`feat:` / `#minor` 递增 `minor`，`BREAKING CHANGE:` / `#major` 递增 `major`。
 
 ### 代码规范与 PR 检查清单
 * **严格 C++17 标准：** 在 `/W4 /permissive- /utf-8` 下保持零新增编译器警告。

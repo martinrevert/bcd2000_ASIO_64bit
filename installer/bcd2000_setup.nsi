@@ -15,7 +15,7 @@
   !define OUT_FILE "..\build\Release\Behringer_BCD2000_Setup_x64.exe"
 !endif
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.0"
+  !define APP_VERSION "2.0.0"
 !endif
 
 !define APP_NAME "Behringer BCD2000 ASIO & MIDI Driver (x64)"
@@ -34,6 +34,15 @@ RequestExecutionLevel admin
 ShowInstDetails show
 ShowUnInstDetails show
 SetCompressor /SOLID lzma
+
+; Windows PE Version Information Header
+VIProductVersion "${APP_VERSION}.0"
+VIAddVersionKey "ProductName" "${APP_NAME}"
+VIAddVersionKey "CompanyName" "${APP_PUBLISHER}"
+VIAddVersionKey "FileVersion" "${APP_VERSION}.0"
+VIAddVersionKey "ProductVersion" "${APP_VERSION}"
+VIAddVersionKey "FileDescription" "Behringer BCD2000 64-bit ASIO and MIDI Driver Suite Installer"
+VIAddVersionKey "LegalCopyright" "Copyright (C) 2024-2026 Martin Revert and contributors"
 
 !include "MUI2.nsh"
 !include "x64.nsh"

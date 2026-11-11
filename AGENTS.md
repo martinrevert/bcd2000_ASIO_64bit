@@ -159,7 +159,43 @@ Write-Output "All documentation links and asset references verified successfully
 
 ---
 
-## 6. Self-Evolution: Rules for Modifying `AGENTS.md`
+## 6. Automated Release, Versioning & Tagging System
+
+The repository features a fully automated Continuous Delivery (CD) pipeline driven by GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)) running on `windows-latest`.
+
+### 1. Invariant: Baseline Version `v2.0.0` (Anti-Collision Guardrail)
+* **Never** reset or downgrade the project version to `0.x` or `1.x`.
+* Behringer originally shipped legacy 32-bit drivers labeled `v1.1.1.0` and `v1.2.0.0`.
+* To completely eliminate user confusion and prevent Windows registry or DLL version collisions, this native 64-bit driver suite strictly starts at **`v2.0.0`** and monotonically increments from there.
+
+### 2. Push-to-Main Automatic Tagging & Release Rule
+* **Every direct push or merged Pull Request to the `main` branch triggers an automated GitHub release**.
+* The workflow automatically:
+  1. Inspects Git history and calculates the next Semantic Version tag (`mathieudutour/github-tag-action`).
+  2. Tags the commit in the GitHub repository.
+  3. Configures and builds all 64-bit Release binaries via CMake and MSVC.
+  4. Compiles the single-EXE installer [`Behringer_BCD2000_Setup_x64.exe`](installer/bcd2000_setup.nsi) via NSIS with embedded Windows PE metadata (`ProductVersion` / `FileVersion` matching the release tag).
+  5. Bundles a standalone portable ZIP archive (`bcd2000_v<VERSION>_binaries_x64.zip`).
+  6. Computes SHA-256 integrity hashes into `SHA256SUMS.txt`.
+  7. Publishes the official **GitHub Release** with all assets and auto-generated categorized release notes via [`.github/release.yml`](.github/release.yml). GitHub automatically attaches source code `.zip` and `.tar.gz` to the release.
+
+### 3. Commit Message Conventions for AI Agents
+AI agents (and human contributors) should use commit messages to control Semantic Version increments:
+* **Default / Patch bump (`2.0.0 -> 2.0.1`):** Default behavior on any push to `main` (e.g. `fix: ...`, `fix(...)`, `docs: ...`, `chore: ...`, or standard commit messages).
+* **Minor bump (`2.0.x -> 2.1.0`):** Include `feat: ...`, `feat(...)`, or `#minor` in the commit message or PR title when introducing backward-compatible new features, new DAW presets, or tools.
+* **Major bump (`2.x.x -> 3.0.0`):** Include `BREAKING CHANGE: ...`, `feat!:`, or `#major` in the commit message or PR title when introducing breaking architectural modifications.
+
+### 4. Local Build with Version Override
+When testing builds locally in CMake or verifying packaging, always specify or verify the target version:
+```powershell
+cmake -B build -A x64 -DBCD2000_VERSION="2.0.0"
+cmake --build build --config Release
+cmake --build build --config Release --target bcd2000_installer
+```
+
+---
+
+## 7. Self-Evolution: Rules for Modifying `AGENTS.md`
 
 As the driver evolves, new hardware quirks, Windows OS platform changes (e.g., Windows 11 updates, new USB host controller behaviors), or project additions (e.g., automated GitHub Actions CI/CD pipelines, new DAW script mappings) may introduce new constraints.
 

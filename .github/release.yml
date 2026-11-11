@@ -1,0 +1,30 @@
+# GitHub Release Notes Configuration for Behringer BCD2000 64-bit Driver
+changelog:
+  categories:
+    - title: "🚀 Features & Enhancements"
+      labels:
+        - "feature"
+        - "enhancement"
+        - "feat"
+    - title: "🐛 Bug Fixes & Audio/MIDI Stability"
+      labels:
+        - "fix"
+        - "bug"
+        - "hotfix"
+    - title: "🎛️ Presets & MIDI Controller Mappings"
+      labels:
+        - "preset"
+        - "midi"
+        - "mixxx"
+    - title: "📚 Documentation & Multilingual Translations"
+      labels:
+        - "documentation"
+        - "docs"
+        - "i18n"
+    - title: "🛠️ Build System, Tooling & CI/CD"
+      labels:
+        - "build"
+        - "ci"
+        - "maintenance"
+        - "chore"
+

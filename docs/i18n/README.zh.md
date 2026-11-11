@@ -59,6 +59,12 @@ Behringer 于 2000 年代中期（Windows XP / Vista 时代）推出了 BCD2000�
 
 ## 快速上手指南
 
+### 下载与发布文件
+请从官方 **[GitHub Releases](https://github.com/martinrevert/bcd2000_ASIO_64bit/releases)** 页面获取最新发布的安装包与文件：
+* **`Behringer_BCD2000_Setup_x64.exe`**：推荐使用的单文件自动安装包（内置 WinUSB 驱动配置、ASIO/MIDI DLL 及 Mixxx 安全映射）。
+* **`bcd2000_v2.x.x_binaries_x64.zip`**：独立便携免安装包，适合高级用户手动配置。
+* **`SHA256SUMS.txt`**：SHA-256 校验哈希文件，用于验证下载完整性。
+
 ### 系统要求
 * 运行 **Windows 10 或 Windows 11（64 位 / x64）** 的电脑。
 * 一台 **Behringer BCD2000**（建议直连主板 USB 接口，避免使用无源 USB 集线器）。

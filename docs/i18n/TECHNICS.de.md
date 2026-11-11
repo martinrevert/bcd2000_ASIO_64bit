@@ -136,7 +136,8 @@ Dieses Projekt entwickelte sich aus dem ursprünglichen Verifizierungsplan in [`
 
 ```powershell
 # 1. Für 64-Bit konfigurieren (x64 wird durch CMakeLists.txt strikt erzwungen)
-cmake -B build -A x64
+# Standardversion ist 2.0.0; kann über -DBCD2000_VERSION="X.Y.Z" überschrieben werden
+cmake -B build -A x64 -DBCD2000_VERSION="2.0.0"
 
 # 2. Alle Treiber-DLLs und Diagnosewerkzeuge kompilieren (RelWithDebInfo oder Release)
 cmake --build build --config Release
@@ -184,6 +185,7 @@ Pull Requests, Fehlerberichte, Hardware-Tests mit verschiedenen USB-Controllern 
 3. **Echtzeit-Sicherheit:** In `AsioHostThreadMain` und `UsbStreamingThreadMain` **niemals** Heap-Allokationen, blockierende UI/IPC-Locks oder synchrone Datei-I/O ausführen.
 4. **Zentrale Protokoll-Quelle:** VID/PID, `kInitSequence`, Pipe-Namen, `MidiRunningStatusParser` und Frame-Helfer bleiben in [`src/common/bcd2000_usb_protocol.h`](../../src/common/bcd2000_usb_protocol.h).
 5. **Dual-Mode-Handoff erhalten:** WinUSB-Änderungen müssen das `'R' -> 'K'`-Protokoll ohne Schließen offener WinMM-Handles einhalten.
+6. **Continuous Delivery & SemVer (v2.0.0+):** Jedes Update im `main`-Branch löst automatische Builds, NSIS-Paketierung und Tagging via GitHub Actions ([`.github/workflows/release.yml`](../../.github/workflows/release.yml)) aus. Die Basisversion beginnt bei `v2.0.0`, um Verwechslungen mit den veralteten 32-Bit-Treibern von Behringer (`v1.x`) auszuschließen. Commit-Nachrichten steuern das SemVer-Inkrement: Standard-Commits erhöhen `patch`, `feat:` / `#minor` erhöht `minor` und `BREAKING CHANGE:` / `#major` erhöht `major`.
 
 ### Code-Stil & PR-Checkliste
 * **Sauberes C++17:** Mit `/W4 /permissive- /utf-8` fehler- und warnungsfrei kompilieren.

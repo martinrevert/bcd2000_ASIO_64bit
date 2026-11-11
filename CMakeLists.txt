@@ -17,7 +17,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 cmake_minimum_required(VERSION 3.20)
-project(bcd2000_ASIO_64bit LANGUAGES C CXX)
+
+# Driver Suite Versioning (Base starting at 2.0.0 to prevent 32-bit Behringer legacy collisions)
+set(BCD2000_VERSION "2.0.0" CACHE STRING "Driver suite version")
+project(bcd2000_ASIO_64bit VERSION ${BCD2000_VERSION} LANGUAGES C CXX)
 
 # Enforce 64-bit architecture check
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -202,6 +205,7 @@ if(MAKENSIS_EXECUTABLE)
             "/DREPO_DIR=${CMAKE_SOURCE_DIR}"
             "/DBUILD_BIN_DIR=${CMAKE_BINARY_DIR}/$<CONFIG>"
             "/DOUT_FILE=${CMAKE_BINARY_DIR}/$<CONFIG>/Behringer_BCD2000_Setup_x64.exe"
+            "/DAPP_VERSION=${BCD2000_VERSION}"
             "${CMAKE_SOURCE_DIR}/installer/bcd2000_setup.nsi"
         DEPENDS
             bcd2000_asio

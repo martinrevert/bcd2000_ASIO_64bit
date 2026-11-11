@@ -137,7 +137,8 @@ Este projeto evoluiu a partir da matriz incremental documentada em [`docs/ROADMA
 
 ```powershell
 # 1. Configurar para 64-bit (x64 é estritamente exigido pelo CMakeLists.txt)
-cmake -B build -A x64
+# A versão base padrão é 2.0.0; pode ser sobrescrita via -DBCD2000_VERSION="X.Y.Z"
+cmake -B build -A x64 -DBCD2000_VERSION="2.0.0"
 
 # 2. Compilar todas as DLLs e ferramentas de diagnóstico (Release ou RelWithDebInfo)
 cmake --build build --config Release
@@ -185,6 +186,7 @@ Contribuições são calorosamente bem-vindas: Pull Requests, relatórios de bug
 3. **Segurança em Tempo Real:** Dentro de `AsioHostThreadMain` e `UsbStreamingThreadMain`, **nunca** faça alocações no heap, use locks bloqueantes que concorram com UI/IPC nem I/O síncrona de arquivos.
 4. **Fonte Única do Protocolo:** Mantenha VID/PID, `kInitSequence`, nomes de pipes, `MidiRunningStatusParser` e utilitários de pacotes centralizados em [`src/common/bcd2000_usb_protocol.h`](../../src/common/bcd2000_usb_protocol.h).
 5. **Preservar o Handoff Dual-Mode:** Qualquer alteração no WinUSB deve manter o protocolo `'R' -> 'K'` sem fechar handles WinMM ativos no DAW.
+6. **Entrega Contínua e SemVer (v2.0.0+):** Cada atualização na branch `main` dispara compilação, empacotamento NSIS e versionamento automatizado no GitHub Actions ([`.github/workflows/release.yml`](../../.github/workflows/release.yml)). A versão base inicia em `v2.0.0` para evitar conflitos com os drivers originais de 32 bits da Behringer (`v1.x`). Mensagens de commit guiam o versionamento: commits comuns geram incremento `patch`, `feat:` / `#minor` geram `minor`, e `BREAKING CHANGE:` / `#major` geram `major`.
 
 ### Estilo de Código e Checklist de PR
 * **C++17 estrito:** Deve compilar sem novos warnings em `/W4 /permissive- /utf-8`.
