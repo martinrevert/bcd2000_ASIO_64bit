@@ -632,6 +632,7 @@ ASIOError Bcd2000AsioDriver::start() {
 
     m_hAsioTriggerEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     m_usbRateReady.store(false, std::memory_order_release);
+    m_exactModeActive.store(true, std::memory_order_release);
     m_usbTargetRate.store(kDefaultSampleRate, std::memory_order_release);
     m_prefillReady.store(false, std::memory_order_release);
     m_streamingActive.store(true, std::memory_order_release);
@@ -731,9 +732,11 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
 
     // Filter USB URB completion timing jitter from ASIOTimeInfo.systemTime so
     // DAW/DJ transport PLLs see a smooth, strictly monotonic audio clock.
+    // Keep wall-clock time anchored during startup prefill bursts.
     const double nominalStepNs =
         (static_cast<double>(m_bufferSize) * 1.0e9) / m_sampleRate;
-    if (curPos == 0 || m_smoothedSystemTimeNs <= 0.0) {
+    if (curPos == 0 || m_smoothedSystemTimeNs <= 0.0 ||
+        !m_prefillReady.load(std::memory_order_acquire)) {
         m_smoothedSystemTimeNs = static_cast<double>(rawNowNs);
     } else {
         m_smoothedSystemTimeNs += nominalStepNs;
@@ -776,12 +779,15 @@ void Bcd2000AsioDriver::InvokeHostBufferSwitch() {
     const size_t mask = kRingCapacityFrames - 1;
     uint64_t writeIdx = m_ringWriteFrames.load(std::memory_order_relaxed);
 
-    // Match production rate to the active USB transport rate determined by UsbStreamingThreadMain
-    // (exact 44,100 Hz with 352/360-byte packets, or BytesPerInterval-derived rate on fallback).
-    // When host ASIO rate equals active USB rate (e.g. 44.1 kHz -> 44.1 kHz), perform a bit-exact
-    // 1:1 copy without resampling; otherwise resample with 4-point Hermite cubic interpolation.
+    // Match production rate to the active USB transport rate determined by UsbStreamingThreadMain.
+    // In exact crystal-locked 44.1 kHz mode, ASIO callbacks naturally pace to the BCD2000 DAC crystal
+    // via m_ringReadFrames headroom (~44,098 Hz nominal 44.1k), allowing bit-exact 1:1 copy without
+    // resampling when host sample rate is 44.1 kHz. Non-44.1k host rates resample against live EP 0x83 IN rate.
     const double usbTargetRate = m_usbTargetRate.load(std::memory_order_acquire);
-    const bool exactRateMatch = (std::abs(m_sampleRate - usbTargetRate) < 0.01);
+    const bool exactMode = m_exactModeActive.load(std::memory_order_acquire);
+    const bool exactRateMatch = exactMode
+                                    ? (std::abs(m_sampleRate - kDefaultSampleRate) < 0.01)
+                                    : (std::abs(m_sampleRate - usbTargetRate) < 0.01);
 
     if (exactRateMatch) {
         for (long s = 0; s < m_bufferSize; ++s) {
@@ -919,12 +925,10 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
     const bool isIsoch = (m_audioOutPipeType == UsbdPipeTypeIsochronous);
 
     // Probe whether WinUSB allows single-packet 352-byte transfers so we can deliver
-    // exact 44,100.0 Hz (9 x 352 B + 1 x 360 B per 10 ms = 44.1 frames/ms) to match
-    // the BCD2000 TUSB3200 / CS4220 fixed 22.5792 MHz crystal clock. If WinUSB requires
-    // full BytesPerInterval-sized transfers, fall back cleanly to 16-packet URBs at
-    // (packetSize / 8) * 1000 Hz so host resampling matches the actual USB drain rate.
+    // crystal-locked ~44.1 kHz (352/360 B per 1 ms) using Implicit Feedback from EP 0x83 IN
+    // to match the BCD2000 TUSB3200 / CS4220 crystal without drift or clicks.
     bool useExact44100 = (isIsoch && packetSize >= 360);
-    size_t numUrbs = useExact44100 ? 40 : 6;
+    size_t numUrbs = useExact44100 ? 64 : 6;
     ULONG slotStride = useExact44100 ? packetSize : static_cast<ULONG>(16 * packetSize);
     ULONG totalDmaBytes = static_cast<ULONG>(numUrbs * slotStride);
 
@@ -981,8 +985,157 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
         }
     }
 
+    // Start EP 0x83 IN implicit clock tracker when running in exact 44.1 kHz mode.
+    // Reading packet byte counts on EP 0x83 IN measures the physical BCD2000 DAC crystal
+    // clock directly in USB frames, eliminating ~2-3 Hz crystal drift clicks permanently.
+    std::atomic<bool> inSyncRunning{false};
+    std::atomic<bool> inClockLocked{false};
+    std::atomic<double> inFramesPerMs{44.1};
+    std::thread inSyncThread;
+
+    if (useExact44100 && m_audioInPipe != 0) {
+        inSyncRunning.store(true, std::memory_order_release);
+        inSyncThread = std::thread([&]() {
+            DWORD inTaskIdx = 0;
+            HANDLE hInMmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &inTaskIdx);
+            if (hInMmcss) {
+                AvSetMmThreadPriority(hInMmcss, AVRT_PRIORITY_CRITICAL);
+            } else {
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+            }
+
+            constexpr size_t kInUrbs = 4;
+            constexpr size_t kInPktsPerUrb = 16;
+            const ULONG inSlotBytes = static_cast<ULONG>(kInPktsPerUrb * packetSize);
+            std::vector<uint8_t> inBuf(kInUrbs * inSlotBytes, 0);
+            WINUSB_ISOCH_BUFFER_HANDLE hInIsoch = nullptr;
+
+            WinUsb_ResetPipe(m_hAudioInterface, m_audioInPipe);
+            if (!WinUsb_RegisterIsochBuffer(m_hAudioInterface, m_audioInPipe,
+                                            inBuf.data(),
+                                            static_cast<ULONG>(inBuf.size()),
+                                            &hInIsoch)) {
+                if (hInMmcss) AvRevertMmThreadCharacteristics(hInMmcss);
+                return;
+            }
+
+            struct InUrb {
+                OVERLAPPED ov{};
+                std::vector<USBD_ISO_PACKET_DESCRIPTOR> pkts;
+                ULONG offset = 0;
+                bool inFlight = false;
+            };
+            std::vector<InUrb> inUrbs(kInUrbs);
+            for (size_t i = 0; i < kInUrbs; ++i) {
+                inUrbs[i].offset = static_cast<ULONG>(i * inSlotBytes);
+                inUrbs[i].pkts.resize(kInPktsPerUrb);
+                inUrbs[i].ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            }
+
+            bool continueIn = false;
+            auto SubmitIn = [&](size_t idx) -> bool {
+                InUrb &s = inUrbs[idx];
+                ResetEvent(s.ov.hEvent);
+                std::memset(s.pkts.data(), 0,
+                            s.pkts.size() * sizeof(USBD_ISO_PACKET_DESCRIPTOR));
+                BOOL ok = WinUsb_ReadIsochPipeAsap(
+                    hInIsoch, s.offset, inSlotBytes, continueIn ? TRUE : FALSE,
+                    kInPktsPerUrb, s.pkts.data(), &s.ov);
+                DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+                if (!ok && err != ERROR_IO_PENDING && continueIn) {
+                    ResetEvent(s.ov.hEvent);
+                    ok = WinUsb_ReadIsochPipeAsap(
+                        hInIsoch, s.offset, inSlotBytes, FALSE,
+                        kInPktsPerUrb, s.pkts.data(), &s.ov);
+                    err = ok ? ERROR_SUCCESS : GetLastError();
+                }
+                if (ok || err == ERROR_IO_PENDING) {
+                    continueIn = true;
+                    s.inFlight = true;
+                    return true;
+                }
+                s.inFlight = false;
+                return false;
+            };
+
+            for (size_t i = 0; i < kInUrbs; ++i) {
+                if (!SubmitIn(i)) {
+                    break;
+                }
+            }
+
+            uint64_t accFrames = 0;
+            uint64_t accPkts = 0;
+            size_t reapIdx = 0;
+            while (inSyncRunning.load(std::memory_order_acquire) &&
+                   m_streamingActive.load(std::memory_order_acquire)) {
+                InUrb &s = inUrbs[reapIdx];
+                if (!s.inFlight) {
+                    break;
+                }
+                if (WaitForSingleObject(s.ov.hEvent, 200) != WAIT_OBJECT_0) {
+                    break;
+                }
+                DWORD dummy = 0;
+                BOOL ok = WinUsb_GetOverlappedResult(m_hAudioInterface, &s.ov,
+                                                     &dummy, FALSE);
+                s.inFlight = false;
+                if (!inSyncRunning.load(std::memory_order_acquire) ||
+                    !m_streamingActive.load(std::memory_order_acquire)) {
+                    break;
+                }
+                if (ok) {
+                    for (size_t p = 0; p < kInPktsPerUrb; ++p) {
+                        const ULONG len = s.pkts[p].Length;
+                        if (s.pkts[p].Status == 0 && len > 0) {
+                            accFrames += (len / 8);
+                            accPkts++;
+                        }
+                    }
+                    if (accPkts >= 200) {
+                        const double fpm = static_cast<double>(accFrames) /
+                                           static_cast<double>(accPkts);
+                        inFramesPerMs.store(fpm, std::memory_order_release);
+                        m_usbTargetRate.store(fpm * 1000.0, std::memory_order_release);
+                        inClockLocked.store(true, std::memory_order_release);
+                    }
+                } else {
+                    continueIn = false;
+                }
+
+                if (!SubmitIn(reapIdx)) {
+                    break;
+                }
+                reapIdx = (reapIdx + 1) % kInUrbs;
+            }
+
+            WinUsb_AbortPipe(m_hAudioInterface, m_audioInPipe);
+            for (size_t i = 0; i < kInUrbs; ++i) {
+                if (inUrbs[i].inFlight) {
+                    WaitForSingleObject(inUrbs[i].ov.hEvent, 100);
+                }
+                if (inUrbs[i].ov.hEvent) {
+                    CloseHandle(inUrbs[i].ov.hEvent);
+                }
+            }
+            WinUsb_UnregisterIsochBuffer(hInIsoch);
+            if (hInMmcss) AvRevertMmThreadCharacteristics(hInMmcss);
+        });
+
+        for (int w = 0; w < 25 && !inClockLocked.load(std::memory_order_acquire) &&
+                        m_streamingActive.load(std::memory_order_acquire);
+             ++w) {
+            Sleep(10);
+        }
+    }
+
     const double actualUsbRate =
-        useExact44100 ? 44100.0 : (static_cast<double>(packetSize / 8) * 1000.0);
+        useExact44100
+            ? (inClockLocked.load(std::memory_order_acquire)
+                   ? (inFramesPerMs.load(std::memory_order_acquire) * 1000.0)
+                   : 44100.0)
+            : (static_cast<double>(packetSize / 8) * 1000.0);
+    m_exactModeActive.store(useExact44100, std::memory_order_release);
     m_usbTargetRate.store(actualUsbRate, std::memory_order_release);
     m_usbRateReady.store(true, std::memory_order_release);
 
@@ -996,9 +1149,13 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
     std::vector<UrbSlot> urbs(numUrbs);
     for (size_t i = 0; i < numUrbs; ++i) {
         urbs[i].offset = static_cast<ULONG>(i * slotStride);
-        urbs[i].length = useExact44100 ? (((i % 10) == 9) ? 360 : 352) : slotStride;
+        urbs[i].length = slotStride;
         urbs[i].ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     }
+
+    // Lead with 45-frame (360 B) packet via 0.9 initial accumulator for positive FIFO headroom
+    double exactFrameAccumulator = 0.9;
+    const size_t maxFramesPerPacket = packetSize / 8;
 
     bool continueStream = false;
     bool useExplicitFrame = false;
@@ -1063,6 +1220,20 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
     auto HarvestAndFillUrb = [&](size_t idx) -> bool {
         UrbSlot &slot = urbs[idx];
         ResetEvent(slot.ov.hEvent);
+
+        if (useExact44100) {
+            const double fpm =
+                inClockLocked.load(std::memory_order_acquire)
+                    ? inFramesPerMs.load(std::memory_order_relaxed)
+                    : 44.1;
+            exactFrameAccumulator += fpm;
+            size_t pktFrames = static_cast<size_t>(std::floor(exactFrameAccumulator));
+            exactFrameAccumulator -= static_cast<double>(pktFrames);
+            pktFrames = std::clamp<size_t>(pktFrames, 1, maxFramesPerPacket);
+            slot.length = static_cast<ULONG>(pktFrames * 8);
+        } else {
+            slot.length = slotStride;
+        }
 
         int16_t *dst = reinterpret_cast<int16_t *>(dmaBuffer.data() + slot.offset);
         const size_t framesInSlot = slot.length / 8;
@@ -1137,6 +1308,13 @@ void Bcd2000AsioDriver::UsbStreamingThreadMain() {
             break;
         }
         nextReap = (nextReap + 1) % numUrbs;
+    }
+
+    // Stop EP 0x83 IN implicit clock tracker cleanly before tearing down pipes
+    if (inSyncThread.joinable()) {
+        inSyncRunning.store(false, std::memory_order_release);
+        WinUsb_AbortPipe(m_hAudioInterface, m_audioInPipe);
+        inSyncThread.join();
     }
 
     // Cleanly drain in-flight URBs
